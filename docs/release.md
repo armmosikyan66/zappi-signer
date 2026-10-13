@@ -46,6 +46,10 @@ Node SEA automatically.
 
 ## Publish
 
+Bump `packages/zappi-signer/package.json` first — the workflow refuses a tag
+that does not match the package version, so a stale binary can never be
+published under an old version number again.
+
 Push a tag `zappi-signer-v<semver>`. `.github/workflows/zappi-signer-release.yml`
 builds every target in a matrix, runs tests, signs with the repo secret
 `ZAPPI_SIGNER_RELEASE_KEY`, and publishes the GitHub release. Without the

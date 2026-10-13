@@ -1,6 +1,6 @@
 {
   "name": "@zappimoney/zappi-signer",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Local signer for Zappi pot spends. The mnemonic stays on this machine.",
   "type": "module",
   "bin": {

@@ -63,6 +63,21 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Guard against publishing a stale binary under an unchanged version:
+      # the tag (zappi-signer-v<semver>) must equal package.json's version.
+      # This is what allowed released v0.1.2 to ship without the
+      # server-pot flow (trust-server / finalize / provision <potId>).
+      - name: Verify tag matches package.json version
+        run: |
+          set -euo pipefail
+          pkg_version="$(node -p "require('./packages/zappi-signer/package.json').version")"
+          expected="zappi-signer-v${pkg_version}"
+          if [ "${{ github.ref_name }}" != "$expected" ]; then
+            echo "::error::tag ${{ github.ref_name }} does not match packages/zappi-signer version $pkg_version (expected tag $expected)."
+            echo "::error::Bump packages/zappi-signer/package.json, commit, then retag."
+            exit 1
+          fi
+
       - uses: actions/setup-node@v4
         with:
           node-version: '22'
