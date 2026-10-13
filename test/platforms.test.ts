@@ -309,6 +309,18 @@ test('macOS presence and helper failures refuse without a second keychain', asyn
   await expect(missing.getSecret(UNLOCK_ACCOUNT)).rejects.toThrow('keychain unavailable')
   await expect(missing.deviceFactor()).rejects.toThrow('keychain unavailable')
 
+  const junk = join(dir, 'not-a-helper')
+  writeFileSync(junk, 'not-a-mach-o')
+  chmodSync(junk, 0o700)
+  const broken = createDarwinKeyStore(() => junk)
+  await expect(broken.confirmUserPresence('Authorize Zappi')).rejects.toThrow('keychain unavailable')
+  await expect(broken.getSecret(UNLOCK_ACCOUNT)).rejects.toThrow('keychain unavailable')
+})
+
+// The stand-in helper is a POSIX shebang script. Windows spawn throws EFTYPE
+// for that file instead of running it. Darwin and Linux cover this protocol.
+test.skipIf(process.platform === 'win32')('macOS helper protocol follows the stand-in helper', async () => {
+  const dir = tempDir()
   const binary = installHelper(dir)
   const store = createDarwinKeyStore(() => binary)
   arm(dir, { presence: { status: 0 } })

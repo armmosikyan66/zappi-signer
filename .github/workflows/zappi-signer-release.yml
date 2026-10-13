@@ -79,10 +79,11 @@ jobs:
           npm run typecheck
           npm test
 
+      # typecheck is `tsc --noEmit` and does not write dist/index.js.
       - name: Build standalone binary
         run: |
           set -euo pipefail
-          node scripts/build-bin.mjs
+          npm run build:bin
 
       - name: Build macOS keychain helper
         if: matrix.keychain

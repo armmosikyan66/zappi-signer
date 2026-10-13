@@ -205,15 +205,23 @@ function runHelper(
   secret?: string,
 ): Promise<{ status: number; stdout: Buffer }> {
   return new Promise((resolve, reject) => {
-    const child = spawn(binary, [op, account], {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      env: {
-        PATH: process.env.PATH ?? '',
-        HOME: process.env.HOME ?? '',
-        USER: process.env.USER ?? '',
-        LOGNAME: process.env.LOGNAME ?? '',
-      },
-    })
+    // ENOENT is reported on the error event. ENOEXEC and Windows EFTYPE are
+    // thrown from spawn() itself. Both mean the helper cannot run.
+    let child
+    try {
+      child = spawn(binary, [op, account], {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: process.env.HOME ?? '',
+          USER: process.env.USER ?? '',
+          LOGNAME: process.env.LOGNAME ?? '',
+        },
+      })
+    } catch {
+      reject(new PotError('keychain unavailable'))
+      return
+    }
     const stdout: Buffer[] = []
     child.stdout.on('data', (chunk: Buffer) => {
       stdout.push(chunk)
