@@ -1,0 +1,8 @@
+node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+native/macos-keychain
+native/*.node
+.DS_Store
+.zappi-signer/

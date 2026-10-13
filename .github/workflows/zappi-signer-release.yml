@@ -1,0 +1,148 @@
+# Builds, signs, and publishes zappi-signer for every desktop target.
+#
+# Trigger: push a tag named zappi-signer-v<semver> (for example
+# zappi-signer-v0.1.2).
+#
+# The artifacts match what the one-line installer
+# (web/install/signer.sh) downloads and verifies:
+#   zappi-signer-<target>[.exe]          standalone binary
+#   zappi-signer-<target>[.exe].sig      base64 raw Ed25519 signature
+#   zappi-signer-<target>.provenance.json  version + binarySha256
+#   zappi-signer-<target>[.exe].sha256
+#   macos-keychain + macos-keychain.sig  (darwin targets)
+#
+# The signing key is the repo secret ZAPPI_SIGNER_RELEASE_KEY: base64 of a
+# 64-byte Ed25519 secret (seed(32) || public-key(32)). Its public half must
+# equal the PUBLISHER_PUBKEY_PEM pinned in web/install/signer.sh. The key is
+# never logged. sign-release.mjs refuses to produce artifacts without it.
+
+name: zappi-signer release
+
+on:
+  push:
+    tags:
+      - 'zappi-signer-v*'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: zappi-signer-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+            keychain: true
+          - os: macos-14
+            target: darwin-x64
+            keychain: true
+          - os: ubuntu-24.04
+            target: linux-x64
+            keychain: false
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            keychain: false
+          - os: windows-2022
+            target: win-x64
+            keychain: false
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      ZAPPI_SIGNER_VERSION: ${{ github.ref_name }}
+      ZAPPI_SIGNER_COMMIT_SHA: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: package-lock.json
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: '1.3.12'
+
+      - name: Install, typecheck, and test
+        run: |
+          npm ci
+          npm run typecheck
+          npm test
+
+      - name: Build standalone binary
+        run: |
+          set -euo pipefail
+          node scripts/build-bin.mjs
+
+      - name: Build macOS keychain helper
+        if: matrix.keychain
+        run: |
+          set -euo pipefail
+          clang -O2 -o dist/bin/macos-keychain native/macos-keychain.c \
+            -framework Security -framework CoreFoundation
+
+      - name: Sign release artifacts
+        env:
+          ZAPPI_SIGNER_RELEASE_KEY: ${{ secrets.ZAPPI_SIGNER_RELEASE_KEY }}
+        run: |
+          set -euo pipefail
+          ext=""
+          if [ "$TARGET" = "win-x64" ]; then
+            ext=".exe"
+          fi
+          node scripts/sign-release.mjs "dist/bin/zappi-signer-${TARGET}${ext}" --provenance
+          if [ -f dist/bin/macos-keychain ]; then
+            node scripts/sign-release.mjs dist/bin/macos-keychain
+          fi
+
+      - name: Stage release files
+        run: |
+          set -euo pipefail
+          ext=""
+          if [ "$TARGET" = "win-x64" ]; then
+            ext=".exe"
+          fi
+          stage="release-stage"
+          mkdir -p "$stage"
+          base="dist/bin/zappi-signer-${TARGET}${ext}"
+          cp "$base" "$base.sig" "$base.sha256" "$base.provenance.json" "$stage/"
+          if [ -f dist/bin/macos-keychain ]; then
+            cp dist/bin/macos-keychain dist/bin/macos-keychain.sig dist/bin/macos-keychain.sha256 "$stage/"
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: signer-${{ matrix.target }}
+          if-no-files-found: error
+          path: release-stage/*
+
+  publish:
+    name: publish release
+    needs: build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: signer-*
+          merge-multiple: true
+          path: artifacts
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: artifacts/*
+        env:
+          GITHUB_TOKEN: ${{ github.token }}

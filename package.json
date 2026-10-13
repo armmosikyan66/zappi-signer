@@ -1,0 +1,54 @@
+{
+  "name": "@zappimoney/zappi-signer",
+  "version": "0.1.2",
+  "description": "Local signer for Zappi pot spends. The mnemonic stays on this machine.",
+  "type": "module",
+  "bin": {
+    "zappi-signer": "./dist/index.js"
+  },
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "native/macos-keychain.c"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "build:bin": "npm run build && node scripts/build-bin.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src test",
+    "test": "vitest run",
+    "start": "node dist/index.js",
+    "sign:release": "node scripts/sign-release.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "license": "MIT",
+  "dependencies": {
+    "@buildonspark/spark-sdk": "^0.12.1",
+    "@napi-rs/keyring": "^2.1.0",
+    "@noble/curves": "^1.9.7",
+    "@noble/hashes": "^1.8.0",
+    "@scure/base": "^1.2.6",
+    "@scure/bip39": "^2.2.0",
+    "proper-lockfile": "^4.1.2",
+    "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.1",
+    "@types/node": "^22.19.0",
+    "@types/proper-lockfile": "^4.1.4",
+    "esbuild": "^0.25.0",
+    "eslint": "^9.39.1",
+    "postject": "1.0.0-alpha.6",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3",
+    "typescript-eslint": "^8.46.2",
+    "vitest": "^3.2.4"
+  }
+}
