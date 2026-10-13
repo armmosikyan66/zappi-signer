@@ -6,7 +6,7 @@ import { publicMessage } from './errors.js'
 import { redact } from './log.js'
 import { signCommand, type SignOutcome } from './sign-flow.js'
 
-const COMMANDS = ['sign', 'status', 'policy', 'provision', 'prove-address', 'backup', 'restore'] as const
+const COMMANDS = ['sign', 'status', 'policy', 'provision', 'prove-address', 'backup', 'restore', 'trust-server', 'finalize'] as const
 
 type Command = (typeof COMMANDS)[number]
 
@@ -19,6 +19,8 @@ export interface CliInvocation {
   args: readonly string[]
   potId?: string
   label?: string
+  pubkey?: string
+  challenge?: string
 }
 
 export type { CliInjected }
@@ -74,6 +76,8 @@ export function parseSignerArgv(argv: readonly string[]): CliInvocation | null {
   let yes = false
   let potId: string | undefined
   let label: string | undefined
+  let pubkey: string | undefined
+  let challenge: string | undefined
   const positionals: string[] = []
   for (let index = 0; index < argv.length; index += 1) {
     const token = argv[index]
@@ -86,16 +90,22 @@ export function parseSignerArgv(argv: readonly string[]): CliInvocation | null {
       yes = true
       continue
     }
-    if (token === '--pot' || token === '--label') {
+    if (token === '--pot' || token === '--label' || token === '--pubkey' || token === '--challenge') {
       const value = argv[index + 1]
       if (value === undefined || value === '' || value.startsWith('-')) return null
       index += 1
       if (token === '--pot') {
         if (potId !== undefined) return null
         potId = value
-      } else {
+      } else if (token === '--label') {
         if (label !== undefined) return null
         label = value
+      } else if (token === '--pubkey') {
+        if (pubkey !== undefined) return null
+        pubkey = value
+      } else {
+        if (challenge !== undefined) return null
+        challenge = value
       }
       continue
     }
@@ -106,29 +116,56 @@ export function parseSignerArgv(argv: readonly string[]): CliInvocation | null {
   if (!command || !COMMAND_SET.has(command)) return null
   const name = command as Command
   const args = positionals.slice(1)
-  if (!acceptedShape(name, args) || !flagsAllowed(name, potId, label)) return null
-  return {
+  const invocation: CliInvocation = {
     json,
     yes,
     command: name,
     args,
     ...(potId !== undefined ? { potId } : {}),
     ...(label !== undefined ? { label } : {}),
+    ...(pubkey !== undefined ? { pubkey } : {}),
+    ...(challenge !== undefined ? { challenge } : {}),
   }
+  if (!acceptedShape(name, args) || !flagsAllowed(invocation)) return null
+  return invocation
 }
 
 function acceptedShape(command: Command, args: readonly string[]): boolean {
   if (command === 'sign' || command === 'status') return args.length === 1 && args[0] !== ''
   if (command === 'policy') return args.length === 1 && (args[0] === 'view' || args[0] === 'tighten')
+  if (command === 'provision' || command === 'prove-address') {
+    return args.length === 0 || (args.length === 1 && args[0] !== '')
+  }
   return args.length === 0
 }
 
-function flagsAllowed(command: Command, potId: string | undefined, label: string | undefined): boolean {
-  if (command === 'provision') return potId === undefined
-  if (command === 'policy' || command === 'prove-address' || command === 'backup' || command === 'restore') {
-    return label === undefined
+function flagsAllowed(invocation: CliInvocation): boolean {
+  const { command, args, potId, label, pubkey, challenge } = invocation
+  switch (command) {
+    case 'provision':
+      // Legacy local-pot flow: no --pot. Server-pot flow: positional pot id.
+      return potId === undefined && pubkey === undefined && challenge === undefined
+    case 'prove-address':
+      if (label !== undefined || pubkey !== undefined) return false
+      if (args.length === 0) return challenge === undefined
+      return potId === undefined
+    case 'trust-server':
+      return (
+        args.length === 0 &&
+        potId === undefined &&
+        label === undefined &&
+        challenge === undefined &&
+        pubkey !== undefined
+      )
+    case 'finalize':
+      return args.length === 0 && label === undefined && challenge === undefined && pubkey === undefined
+    case 'policy':
+    case 'backup':
+    case 'restore':
+      return label === undefined && pubkey === undefined && challenge === undefined
+    default:
+      return potId === undefined && label === undefined && pubkey === undefined && challenge === undefined
   }
-  return potId === undefined && label === undefined
 }
 
 function usage(): string {
@@ -137,8 +174,11 @@ function usage(): string {
     'zappi-signer status <requestId> [--json]',
     'zappi-signer policy view --pot <id> [--json]',
     'zappi-signer policy tighten --pot <id> [--json]',
-    'zappi-signer provision [--label <text>] [--json]',
+    'zappi-signer trust-server --pubkey <hex> [--json]',
+    'zappi-signer provision [<potId>] [--label <text>] [--json]',
+    'zappi-signer prove-address <provisionId> [--challenge <json>] [--json]',
     'zappi-signer prove-address --pot <id> [--json]',
+    'zappi-signer finalize --pot <id> [--json]',
     'zappi-signer backup --pot <id> [--json]',
     'zappi-signer restore --pot <id> [--json]',
   ].join('\n')

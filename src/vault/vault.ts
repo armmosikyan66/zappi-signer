@@ -61,6 +61,12 @@ export function deviceBoundKey(scryptKey: Uint8Array, factor: Uint8Array): Buffe
 }
 export const VAULT_KIND = 'zappi-pots-mcp'
 export const POT_ID_RE = /^pot_[0-9a-f]{32}$/
+/** Backend pot id (UUID) for server-created pots; accepted as a vault record key. */
+export const SERVER_POT_ID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+const VAULT_POT_KEY_RE =
+  /^(?:pot_[0-9a-f]{32}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/
+const PROVISION_ID_RE = /^prov_[0-9a-f]{16}$/
 const GCM_NONCE_LEN = 12
 const GCM_TAG_LEN = 16
 const SALT_LEN = 16
@@ -103,6 +109,8 @@ const payloadSchema = z.object({
   potIndex: z.number().int().nonnegative().optional(),
   linkedVaultId: z.string().regex(POT_ID_RE).optional(),
   lastSweepAt: z.number().int().nonnegative().optional(),
+  /** Server bind correlation id, stored by the agent (server-pot-first) flow. */
+  provisionId: z.string().regex(PROVISION_ID_RE).optional(),
   backup: z.object({
     confirmed: z.boolean(),
     positions: z.tuple([
@@ -137,6 +145,7 @@ export interface PotSnapshot {
   fromMaster: boolean
   potIndex?: number
   lastSweepAt?: number
+  provisionId?: string
 }
 
 export interface CreateVaultInput {
@@ -151,6 +160,10 @@ export interface CreateVaultInput {
   role?: PotRole
   fromMaster?: boolean
   potIndex?: number
+  /** Explicit record key: a backend UUID for server-created pots. */
+  potId?: string
+  /** Server bind correlation id stored with the record. */
+  provisionId?: string
 }
 
 export interface MnemonicContext {
@@ -235,7 +248,7 @@ export class VaultStore {
         throw new PotError('too many pots')
       }
       assertPositions(input.positions)
-      const potId = `pot_${randomBytes(16).toString('hex')}`
+      const potId = resolveCreatePotId(input, pots)
       const createdAt = new Date().toISOString()
       const role = input.role ?? 'free'
       const secrets: PotSecrets = {
@@ -254,6 +267,7 @@ export class VaultStore {
         freeze: 'active',
         fromMaster: input.fromMaster ?? false,
         ...(input.potIndex !== undefined ? { potIndex: input.potIndex } : {}),
+        ...(input.provisionId !== undefined ? { provisionId: input.provisionId } : {}),
       }
       if (role === 'free') {
         const reserve = pots.find((pot) => pot.secrets.role === 'vault')
@@ -1037,7 +1051,7 @@ const fileSealedSchema = z
     vaultCreatedAt: z.string().min(10).max(40),
     kdf: kdfSchema,
     pots: z.record(
-      z.string().regex(POT_ID_RE),
+      z.string().regex(VAULT_POT_KEY_RE),
       z
         .object({
           createdAt: z.string().min(10).max(40),
@@ -1113,6 +1127,21 @@ function decodeB64(value: string, expected: number | null): Buffer {
   return buf
 }
 
+/**
+ * Record key for a new pot: the caller-supplied backend UUID when present,
+ * otherwise a generated local `pot_` id. A duplicate explicit id refuses.
+ */
+function resolveCreatePotId(input: CreateVaultInput, pots: readonly PotEntry[]): string {
+  if (input.potId === undefined) return `pot_${randomBytes(16).toString('hex')}`
+  const normalized = input.potId.trim().toLowerCase()
+  if (!SERVER_POT_ID_RE.test(normalized)) throw new PotError('could not create pot')
+  if (input.provisionId !== undefined && !PROVISION_ID_RE.test(input.provisionId)) {
+    throw new PotError('could not create pot')
+  }
+  if (pots.some((pot) => pot.potId === normalized)) throw new PotError('pot already provisioned')
+  return normalized
+}
+
 function selectPot(pots: readonly PotEntry[], potId: string | undefined): PotEntry {
   if (potId) {
     const found = pots.find((pot) => pot.potId === potId)
@@ -1149,6 +1178,7 @@ function toSnapshot(loaded: PotEntry): PotSnapshot {
     ...(loaded.secrets.linkedVaultId ? { linkedVaultId: loaded.secrets.linkedVaultId } : {}),
     ...(loaded.secrets.potIndex !== undefined ? { potIndex: loaded.secrets.potIndex } : {}),
     ...(loaded.secrets.lastSweepAt !== undefined ? { lastSweepAt: loaded.secrets.lastSweepAt } : {}),
+    ...(loaded.secrets.provisionId !== undefined ? { provisionId: loaded.secrets.provisionId } : {}),
   }
 }
 

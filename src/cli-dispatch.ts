@@ -17,13 +17,14 @@ import {
   type PolicyView,
 } from './commands/policy.js'
 import { runProveAddress, runProvision, type ProvisionClient } from './commands/provision.js'
+import { runAgentProvision, runFinalize, runProveChallenge } from './commands/agent.js'
 import { runStatus, type StatusClient } from './commands/status.js'
 import { PotError } from './errors.js'
 import type { KeyStore } from './keystore/types.js'
 import type { SpendingPolicy } from './policy/policy.js'
 import type { SparkSigner } from './spark/signer.js'
 import { type SignCommandOptions, type SignVault, type SpendClient } from './sign-flow.js'
-import { loadPinnedTrust, type PinnedTrust } from './trust.js'
+import { loadPinnedTrust, saveServerPubkey, type PinnedTrust } from './trust.js'
 import type { NonceStore } from './intent.js'
 import type { VaultStore } from './vault/vault.js'
 
@@ -31,7 +32,15 @@ const RECOVERY_ENV = 'ZAPPI_SIGNER_RECOVERY'
 const POT_ID_ENV = 'ZAPPI_POT_ID'
 const MAX_STDIN_BYTES = 1_048_576
 
-type CommandName = 'status' | 'policy' | 'provision' | 'prove-address' | 'backup' | 'restore'
+type CommandName =
+  | 'status'
+  | 'policy'
+  | 'provision'
+  | 'prove-address'
+  | 'backup'
+  | 'restore'
+  | 'trust-server'
+  | 'finalize'
 
 export interface ParsedSignerCommand {
   json: boolean
@@ -39,6 +48,8 @@ export interface ParsedSignerCommand {
   args: readonly string[]
   potId?: string
   label?: string
+  pubkey?: string
+  challenge?: string
 }
 
 /** Sign dependencies plus the fakes the other commands accept in tests. */
@@ -78,6 +89,12 @@ export async function runCliCommand(parsed: ParsedSignerCommand, injected: CliIn
     case 'prove-address':
       await emitProveAddress(parsed, injected)
       return
+    case 'trust-server':
+      await emitTrustServer(parsed, injected)
+      return
+    case 'finalize':
+      await emitFinalize(parsed, injected)
+      return
     case 'backup':
       await emitBackup(parsed, injected)
       return
@@ -115,6 +132,19 @@ async function emitPolicy(parsed: ParsedSignerCommand, injected: CliInjected): P
 
 async function emitProvision(parsed: ParsedSignerCommand, injected: CliInjected): Promise<void> {
   const env = envOf(injected)
+  // Server-pot-first flow: `provision <backendPotId>` creates the wallet
+  // under the pot the backend already created. No backend calls.
+  if (parsed.args.length === 1) {
+    const vault = asProvisionVault(await resolveVault(injected))
+    const result = await runAgentProvision({
+      vault,
+      spark: await sparkOf(injected),
+      potId: parsed.args[0] ?? '',
+      ...(parsed.label !== undefined ? { label: parsed.label } : {}),
+    })
+    writeStdout(parsed.json ? JSON.stringify(result) : `${result.potId} ${result.provisionId} ${result.address}`)
+    return
+  }
   const vault = asProvisionVault(await resolveVault(injected))
   const result = await runProvision({
     vault,
@@ -128,6 +158,22 @@ async function emitProvision(parsed: ParsedSignerCommand, injected: CliInjected)
 }
 
 async function emitProveAddress(parsed: ParsedSignerCommand, injected: CliInjected): Promise<void> {
+  const env = envOf(injected)
+  // Challenge mode: sign the MCP attach challenge for bind_pot_address.
+  if (parsed.args.length === 1) {
+    const vault = asProvisionVault(await resolveVault(injected))
+    const challengeText = parsed.challenge !== undefined ? parsed.challenge : await readStdinText(injected)
+    const challenge = parseStdinJson(challengeText, 'address challenge is malformed')
+    const result = await runProveChallenge({
+      vault,
+      spark: await sparkOf(injected),
+      trust: trustOf(injected, env),
+      provisionId: parsed.args[0] ?? '',
+      challenge,
+    })
+    writeStdout(parsed.json ? JSON.stringify(result) : `${result.sparkAddress} ${result.signature}`)
+    return
+  }
   const potId = requirePot(parsed)
   const vault = asProveVault(await resolveVault(injected))
   const bindingReceipt = parseStdinJson(await readStdinText(injected), 'binding receipt is malformed')
@@ -136,6 +182,28 @@ async function emitProveAddress(parsed: ParsedSignerCommand, injected: CliInject
     trust: trustOf(injected, envOf(injected)),
     bindingReceipt,
     potId,
+  })
+  writeStdout(parsed.json ? JSON.stringify(result) : `${result.potId} bound`)
+}
+
+async function emitTrustServer(parsed: ParsedSignerCommand, injected: CliInjected): Promise<void> {
+  const saved = saveServerPubkey({
+    serverPubkey: parsed.pubkey ?? '',
+    env: envOf(injected),
+    ...(injected.trustConfigPath !== undefined ? { configPath: injected.trustConfigPath } : {}),
+  })
+  writeStdout(parsed.json ? JSON.stringify(saved) : `${saved.serverPubkey} pinned`)
+}
+
+async function emitFinalize(parsed: ParsedSignerCommand, injected: CliInjected): Promise<void> {
+  const potId = requirePot(parsed)
+  const vault = asProveVault(await resolveVault(injected))
+  const bindingReceipt = parseStdinJson(await readStdinText(injected), 'binding receipt is malformed')
+  const result = await runFinalize({
+    vault,
+    trust: trustOf(injected, envOf(injected)),
+    potId,
+    bindingReceipt,
   })
   writeStdout(parsed.json ? JSON.stringify(result) : `${result.potId} bound`)
 }

@@ -31,8 +31,8 @@ export const SIGNER_TRUST_PATH = '/api/signer/trust'
 export const ADDRESS_PROOF_CHALLENGE_PATH = '/api/wallet/pots/address-proof-challenge'
 
 const BIND_PREFIX = 'zappi-pot-address-bind:v1:'
-const NONCE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
-const PUBKEY_RE = /^(02|03)[0-9a-fA-F]{64}$|^04[0-9a-fA-F]{128}$/
+export const NONCE_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i
+export const PUBKEY_RE = /^(02|03)[0-9a-fA-F]{64}$|^04[0-9a-fA-F]{128}$/
 
 export interface ProvisionClient {
   request(method: 'GET' | 'POST', path: string, body?: unknown): Promise<unknown>
@@ -78,7 +78,7 @@ export async function runProvision(input: {
   try {
     const derived = await derivePot(input.spark, phrase)
     // Divergence: SIGNER_PROTOCOL §12 signs canonicalBindingBody; this route takes { sparkAddress } and the identity key signs the returned `message`.
-    // Nest stores action `create` here. bind_pot_address consumes `attach` from MCP issue_address_challenge; the signer signs the action in the server message.
+    // Nest stores action `create` here. bind_pot_address consumes `attach` from MCP start_pot_address_proof; the signer signs the action in the server message.
     const challenge = parseChallenge(
       await call(input.client, 'POST', ADDRESS_PROOF_CHALLENGE_PATH, {
         sparkAddress: derived.address,
@@ -160,7 +160,7 @@ async function call(
   }
 }
 
-async function derivePot(spark: SparkSigner, phrase: Uint8Array): Promise<{ address: string; pubkey: string }> {
+export async function derivePot(spark: SparkSigner, phrase: Uint8Array): Promise<{ address: string; pubkey: string }> {
   try {
     const derived = await spark.derive(phrase, 'MAINNET')
     assertSparkAddress(derived.address)
@@ -173,7 +173,7 @@ async function derivePot(spark: SparkSigner, phrase: Uint8Array): Promise<{ addr
   }
 }
 
-async function signChallenge(
+export async function signChallenge(
   spark: SparkSigner,
   phrase: Uint8Array,
   message: string,
@@ -225,7 +225,7 @@ function parseChallenge(value: unknown, sparkAddress: string, pin: string): Pars
     }
     if (advertised !== pin) throw new PotError('signer trust pin mismatch', 'TRUST_MISMATCH')
   }
-  // Nest's HTTP JSON omits `signature`. MCP issue_address_challenge includes it; never learn a key from it.
+  // Nest's HTTP JSON omits `signature`. MCP start_pot_address_proof includes it; never learn a key from it.
   if (body.signature !== undefined) {
     const signature = typeof body.signature === 'string' ? body.signature.trim() : ''
     if (!verifyMessage(message, signature, pin)) {
@@ -236,7 +236,7 @@ function parseChallenge(value: unknown, sparkAddress: string, pin: string): Pars
 }
 
 /** Server message `zappi-pot-address-bind:v1:<project>:<subject>:<action>:<address>:<nonce>`. Subject may contain colons. */
-function typedChallengeMessage(message: string, sparkAddress: string, nonce: string): boolean {
+export function typedChallengeMessage(message: string, sparkAddress: string, nonce: string): boolean {
   if (message.length < BIND_PREFIX.length + 8 || message.length > 512) return false
   if (message !== message.trim() || hasControl(message) || !message.startsWith(BIND_PREFIX)) return false
   const suffix = message.endsWith(`:attach:${sparkAddress}:${nonce}`)
@@ -250,7 +250,7 @@ function typedChallengeMessage(message: string, sparkAddress: string, nonce: str
   return split > 0 && split < middle.length - 1
 }
 
-function verifyMessage(message: string, signatureHex: string, pubkeyHex: string): boolean {
+export function verifyMessage(message: string, signatureHex: string, pubkeyHex: string): boolean {
   try {
     const clean = signatureHex.trim().toLowerCase()
     if (!/^[0-9a-f]+$/.test(clean) || clean.length % 2 !== 0) return false
@@ -268,7 +268,7 @@ function isIdentitySignature(value: string): boolean {
   return value.length >= 64 && value.length <= 200 && value.length % 2 === 0 && /^[0-9a-f]+$/.test(value)
 }
 
-function usableLabel(value: string): boolean {
+export function usableLabel(value: string): boolean {
   return value.length <= 64 && !hasControl(value)
 }
 

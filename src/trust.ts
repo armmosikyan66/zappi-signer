@@ -2,7 +2,18 @@
  * Install-time trust pins. This module never opens a socket.
  * A fetched GET /api/signer/trust document can only confirm pins.
  */
-import { join } from 'node:path'
+import {
+  chmodSync,
+  closeSync,
+  fsyncSync,
+  lstatSync,
+  mkdirSync,
+  openSync,
+  renameSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs'
+import { dirname, join } from 'node:path'
 import { PotError } from './errors.js'
 import { readNoFollow } from './fs-safe.js'
 import {
@@ -56,6 +67,69 @@ export function loadPinnedTrust(options?: {
     typeof envValue === 'string' && envValue.trim() !== '' ? normalizeSecp256k1Pubkey(envValue) : undefined
   const serverPubkey = envPin ?? fromFile.serverPubkey
   return serverPubkey ? { keys: fromFile.keys, serverPubkey } : { keys: fromFile.keys }
+}
+
+/**
+ * `trust-server --pubkey <hex>`: persist the binding-receipt pin to the trust
+ * config (mode 0600). Existing key pins are kept; `serverPubkey` is replaced.
+ * The pin never comes from a fetched document — only from this explicit call
+ * or the install-time environment variable.
+ */
+export function saveServerPubkey(options: {
+  serverPubkey: string
+  configPath?: string
+  env?: NodeJS.ProcessEnv
+  platform?: NodeJS.Platform
+}): { serverPubkey: string; configPath: string } {
+  const env = options.env ?? process.env
+  const platform = options.platform ?? process.platform
+  const configPath = options.configPath ?? defaultTrustConfigPath(env, platform)
+  const serverPubkey = normalizeSecp256k1Pubkey(options.serverPubkey)
+  const existing = readTrustConfig(configPath)
+  const body = `${JSON.stringify({
+    ...(existing.keys.size > 0 ? { keys: Object.fromEntries(existing.keys) } : {}),
+    serverPubkey,
+  })}\n`
+  writeTrustConfig(configPath, body)
+  return { serverPubkey, configPath }
+}
+
+function writeTrustConfig(path: string, body: string): void {
+  const dir = dirname(path)
+  mkdirSync(dir, { recursive: true, mode: 0o700 })
+  if (process.platform !== 'win32') chmodSync(dir, 0o700)
+  const tmp = join(dir, `.${randomName()}.tmp`)
+  const fd = openSync(tmp, 'w', 0o600)
+  try {
+    const buf = Buffer.from(body, 'utf8')
+    let offset = 0
+    while (offset < buf.length) offset += writeSync(fd, buf, offset)
+    fsyncSync(fd)
+  } finally {
+    closeSync(fd)
+  }
+  if (process.platform !== 'win32') chmodSync(tmp, 0o600)
+  try {
+    const existing = lstatSync(path)
+    if (existing.isSymbolicLink()) {
+      unlinkSync(tmp)
+      throw new PotError('signer trust config is unreadable', 'TRUST_CONFIG')
+    }
+  } catch (error) {
+    if (error instanceof PotError) throw error
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      unlinkSync(tmp)
+      throw new PotError('signer trust config is unreadable', 'TRUST_CONFIG')
+    }
+  }
+  renameSync(tmp, path)
+  if (process.platform !== 'win32') chmodSync(path, 0o600)
+}
+
+function randomName(): string {
+  const bytes = new Uint8Array(8)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('')
 }
 
 /**

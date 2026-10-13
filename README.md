@@ -43,8 +43,11 @@ zappi-signer sign <requestId> [--yes] [--json]
 zappi-signer status <requestId> [--json]
 zappi-signer policy view --pot <id> [--json]
 zappi-signer policy tighten --pot <id> [--json]
-zappi-signer provision [--label <text>] [--json]
+zappi-signer trust-server --pubkey <hex> [--json]
+zappi-signer provision [<potId>] [--label <text>] [--json]
+zappi-signer prove-address <provisionId> [--challenge <json>] [--json]
 zappi-signer prove-address --pot <id> [--json]
+zappi-signer finalize --pot <id> [--json]
 zappi-signer backup --pot <id> [--json]
 zappi-signer restore --pot <id> [--json]
 ```
@@ -60,6 +63,16 @@ An unknown command prints `unknown command` on stderr and exits 1. Failures prin
 `provision` creates a local pot, derives a MAINNET address at account index 1, and posts `POST /api/wallet/pots/address-proof-challenge` with `{ sparkAddress }`. It signs the returned `message`. It does not mark the pot bound (`bound` stays false). Text output is `<potId> <address>`. `--json` also includes `provisionId` (`prov_` plus 16 hex bytes), `pubkey`, `signature`, and `nonce`. The local id is `pot_` plus 32 hex characters. `--label` is display text, at most 64 characters. The command does not print a mnemonic.
 
 `prove-address --pot <id>` reads a binding receipt on stdin. It checks the receipt with `verifyBindingReceipt` against `ZAPPI_SIGNER_SERVER_PUBKEY`, including `potId` and the vault record's `sparkAddress`. `markBound` runs only after that check. A failed check leaves the pot unbound. Text output is `<potId> bound`. `--json` prints `{ potId, address, bound: true }`.
+
+### Server-pot-first flow (MCP free pots)
+
+For a pot the backend already created (`create_pot`), the wallet is created locally and bound to that pot id. Every step is idempotent and resumes after an interruption. The mnemonic never leaves this machine.
+
+1. `trust-server --pubkey <hex>` pins the server's address-challenge public key (returned by the MCP `start_pot_address_proof` tool) into `~/.zappi-signer/trust.json`. The pin is never taken from a challenge body.
+2. `provision <backendPotId> --json` generates the mnemonic, derives the MAINNET address, and stores the record under the backend pot id (a UUID). Output: `{ potId, provisionId, address, pubkey }`. Re-running returns the same wallet.
+3. `prove-address <provisionId> --challenge <json> --json` verifies the server-signed `attach` challenge (nonce, message, expiresAt, sparkAddress, action, signature) against the pin, then signs the message with the address identity key. Output includes `signature` and `nonce` for the MCP `bind_pot_address` tool. With no `--challenge`, the challenge JSON is read from stdin.
+4. `bind_pot_address` (MCP) submits `{ potId, sparkAddress, nonce, signature, provisionId }` and returns a `bindingReceipt`.
+5. `finalize --pot <backendPotId> --json` reads the binding receipt on stdin, verifies it against the pin, and marks the record bound. Text output is `<potId> bound`.
 
 `backup --pot <id>` prints a JSON envelope (`kdf`, `t`, `m`, `p`, `salt`, `nonce`, `tag`, `ciphertext`). The mnemonic is inside the ciphertext. `--json` does not add another wrapper. `restore --pot <id>` reads that envelope on stdin, creates a new vault record, and prints the new pot id. `--json` prints `{ potId, createdAt }`. `--pot` must be present and non-empty; `restore` does not use that value as the new id.
 
