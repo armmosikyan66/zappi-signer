@@ -65,9 +65,19 @@ function detectTarget() {
 }
 
 function run(command, args, opts = {}) {
-  const result = spawnSync(command, args, { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts })
-  if (result.error && result.error.code === 'ENOENT') return { ok: false, missing: true, output: '' }
-  const output = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+  // Windows npm and *.cmd shims are not CreateProcess executables. spawn()
+  // throws EFTYPE and leaves stdout empty unless a shell launches them.
+  const spawnOpts = { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', ...opts }
+  if (process.platform === 'win32' && !/\.exe$/i.test(command)) spawnOpts.shell = true
+  let result
+  try {
+    result = spawnSync(command, args, spawnOpts)
+  } catch (error) {
+    const message = error && error.message ? error.message : String(error)
+    return { ok: false, missing: error && error.code === 'ENOENT', output: message }
+  }
+  const output = `${result.error ? `${result.error.message}\n` : ''}${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+  if (result.error && result.error.code === 'ENOENT') return { ok: false, missing: true, output }
   return { ok: result.status === 0, output }
 }
 
