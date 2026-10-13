@@ -65,8 +65,11 @@ test('encrypts the mnemonic and keeps the vault private', async () => {
   expect(file).not.toContain(passphrase ?? '')
   expect(file).not.toContain(address)
   expect(file).not.toContain(pubkey)
+  // Drop JSON keys before scanning words. BIP39 words such as "record",
+  // "address", and "version" are also vault field names.
+  const values = file.replace(/"(?:\\.|[^"\\])*"\s*:/g, '')
   for (const word of mnemonic.split(' ')) {
-    if (word.length >= 5) expect(file).not.toContain(word)
+    if (word.length >= 5) expect(values).not.toContain(word)
   }
   if (process.platform !== 'win32') {
     expect(statSync(join(dir, 'seed-vault.json')).mode & 0o777).toBe(0o600)
