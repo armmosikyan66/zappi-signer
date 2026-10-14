@@ -16,8 +16,8 @@
  * on any machine that already has a real vault (the keychain is shared and a
  * scratch run would corrupt its rollback guard).
  */
-import { spawn } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
@@ -55,19 +55,43 @@ if (process.platform === 'win32') {
 }
 
 // Probe the darwin keychain helper first: the smoke run needs a working
-// keychain WRITE (provision creates the unlock secret), and a locked or
-// unavailable keychain otherwise masquerades as "item missing" on reads and
-// only fails 60s later deep inside provision. A throwaway account name keeps
-// the real zappi-signer items untouched.
+// keychain WRITE (provision creates the unlock secret). The binary (and the
+// helper it spawns) run with HOME pointed at the scratch dir, where no
+// login keychain exists — without one the helper falls back to the default
+// search list and the unsigned helper's access blocks on a prompt that can
+// never be answered in a headless session, hanging until the app's 60s
+// helper timeout. Create a dedicated unlocked keychain in the scratch HOME
+// so the helper's explicit SecKeychainOpen succeeds, fully isolated from
+// the runner's real keychain. A throwaway account name keeps real
+// zappi-signer items untouched even if that isolation ever leaked.
 if (process.platform === 'darwin') {
   const helper = env.ZAPPI_SIGNER_KEYCHAIN_HELPER
   if (!helper || !existsSync(helper)) {
     console.error(`[smoke-bin] FAIL: darwin keychain helper not found: ${helper ?? '(unset)'}`)
     process.exit(1)
   }
+  const keychainDir = join(home, 'Library', 'Keychains')
+  const keychainPath = join(keychainDir, 'login.keychain-db')
+  mkdirSync(keychainDir, { recursive: true })
+  for (const args of [
+    ['create-keychain', '-p', 'zappi-smoke', keychainPath],
+    ['unlock-keychain', '-p', 'zappi-smoke', keychainPath],
+    ['set-keychain-settings', '-lut', '86400', keychainPath],
+  ]) {
+    const step = spawnSync('security', args, { encoding: 'utf8' })
+    if (step.status !== 0) {
+      console.error(`[smoke-bin] FAIL: security ${args[0]} exited ${step.status} — ${step.stderr?.trim()}`)
+      process.exit(1)
+    }
+  }
+  // The probe must see exactly what the binary's helper sees: scratch HOME.
+  const scratchEnv = { PATH: env.PATH ?? '', HOME: home, USER: env.USER ?? '', LOGNAME: env.LOGNAME ?? '' }
   const probe = (op, input) =>
     new Promise((resolve) => {
-      const p = spawn(helper, [op, 'zappi-smoke-probe'], { stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] })
+      const p = spawn(helper, [op, 'zappi-smoke-probe'], {
+        env: scratchEnv,
+        stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'],
+      })
       let out = ''
       let err = ''
       if (input !== undefined) {
@@ -122,12 +146,21 @@ child.on('close', (code) => {
   if (!/^(02|03)[0-9a-fA-F]{64}$/.test(parsed.pubkey ?? '')) problems.push('pubkey malformed')
   if (problems.length > 0) fail(problems.join('; '), stderr)
   console.log(`[smoke-bin] PASS: provision returned a usable wallet (${parsed.address.slice(0, 12)}…)`)
+  cleanupKeychain()
+  rmSync(home, { recursive: true, force: true })
   process.exit(0)
 })
 
 function fail(reason, stderr = '') {
+  cleanupKeychain()
   rmSync(home, { recursive: true, force: true })
   const cause = stderr.trim() ? ` — stderr: ${stderr.trim().slice(0, 300)}` : ''
   console.error(`[smoke-bin] FAIL: ${reason}${cause}`)
   process.exit(1)
+}
+
+/** Best-effort: remove the scratch keychain from the runner's search list. */
+function cleanupKeychain() {
+  if (process.platform !== 'darwin') return
+  spawnSync('security', ['delete-keychain', join(home, 'Library', 'Keychains', 'login.keychain-db')], { stdio: 'ignore' })
 }
