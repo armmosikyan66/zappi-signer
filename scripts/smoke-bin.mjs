@@ -54,6 +54,46 @@ if (process.platform === 'win32') {
   env.APPDATA = join(home, 'appdata')
 }
 
+// Probe the darwin keychain helper first: the smoke run needs a working
+// keychain WRITE (provision creates the unlock secret), and a locked or
+// unavailable keychain otherwise masquerades as "item missing" on reads and
+// only fails 60s later deep inside provision. A throwaway account name keeps
+// the real zappi-signer items untouched.
+if (process.platform === 'darwin') {
+  const helper = env.ZAPPI_SIGNER_KEYCHAIN_HELPER
+  if (!helper || !existsSync(helper)) {
+    console.error(`[smoke-bin] FAIL: darwin keychain helper not found: ${helper ?? '(unset)'}`)
+    process.exit(1)
+  }
+  const probe = (op, input) =>
+    new Promise((resolve) => {
+      const p = spawn(helper, [op, 'zappi-smoke-probe'], { stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] })
+      let out = ''
+      let err = ''
+      if (input !== undefined) {
+        p.stdin.write(input)
+        p.stdin.end()
+      }
+      p.stdout.on('data', (c) => (out += c))
+      p.stderr.on('data', (c) => (err += c))
+      p.on('close', (code) => resolve({ code, out, err }))
+      p.on('error', (e) => resolve({ code: -1, out, err: `${err}${e.message}` }))
+    })
+  const started = Date.now()
+  const set = await probe('set', 'smoke-probe-secret')
+  if (set.code !== 0) {
+    console.error(`[smoke-bin] FAIL: keychain write probe failed (exit ${set.code}) — ${set.err.trim() || '(no stderr)'}`)
+    process.exit(1)
+  }
+  const get = await probe('get')
+  if (get.code !== 0 || get.out.toString() !== 'smoke-probe-secret') {
+    console.error(`[smoke-bin] FAIL: keychain read probe failed (exit ${get.code}) — ${get.err.trim() || '(no stderr)'}`)
+    process.exit(1)
+  }
+  await probe('delete')
+  console.log(`[smoke-bin] keychain probe ok (${Date.now() - started}ms)`)
+}
+
 const potId = randomUUID()
 const child = spawn(bin, ['provision', potId, '--json'], { env, stdio: ['ignore', 'pipe', 'pipe'] })
 let stdout = ''

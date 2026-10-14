@@ -131,6 +131,8 @@ jobs:
           case "$TARGET" in
             darwin-*) export ZAPPI_SIGNER_KEYCHAIN_HELPER="$PWD/dist/bin/macos-keychain" ;;
           esac
+          # Opt-in diagnostics from the binary itself (safe cause tokens only).
+          export ZAPPI_SIGNER_DEBUG=1
           node scripts/smoke-bin.mjs "dist/bin/zappi-signer-${TARGET}${ext}" 120000
 
       - name: Sign release artifacts
