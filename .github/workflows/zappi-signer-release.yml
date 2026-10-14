@@ -100,10 +100,26 @@ jobs:
           set -euo pipefail
           npm run build:bin
 
+      - name: Build macOS keychain helper
+        if: matrix.keychain
+        run: |
+          set -euo pipefail
+          # The helper must match the target's arch: the darwin-x64 artifact
+          # ships an x86_64 helper even though this runner is arm64.
+          arch_args=""
+          if [ "$TARGET" = "darwin-x64" ]; then
+            arch_args="-arch x86_64"
+          fi
+          clang -O2 $arch_args -o dist/bin/macos-keychain native/macos-keychain.c \
+            -framework Security -framework CoreFoundation
+
       # Gate the release on the real artifact: the wallet-first provision path
       # does full Spark gRPC init but no backend calls. Skips on linux (no
       # secret service); catches runtime-specific stalls (Bun-compiled gRPC
-      # failure, see docs/agent.md).
+      # failure, see docs/agent.md). The smoke run points HOME at a scratch
+      # dir, so the darwin keychain helper (normally found at
+      # ~/.zappi-signer/macos-keychain as installed by the one-line installer)
+      # must be passed explicitly via ZAPPI_SIGNER_KEYCHAIN_HELPER.
       - name: Smoke-test standalone binary
         if: matrix.keychain || matrix.target == 'win-x64'
         run: |
@@ -112,14 +128,10 @@ jobs:
           if [ "$TARGET" = "win-x64" ]; then
             ext=".exe"
           fi
+          case "$TARGET" in
+            darwin-*) export ZAPPI_SIGNER_KEYCHAIN_HELPER="$PWD/dist/bin/macos-keychain" ;;
+          esac
           node scripts/smoke-bin.mjs "dist/bin/zappi-signer-${TARGET}${ext}" 120000
-
-      - name: Build macOS keychain helper
-        if: matrix.keychain
-        run: |
-          set -euo pipefail
-          clang -O2 -o dist/bin/macos-keychain native/macos-keychain.c \
-            -framework Security -framework CoreFoundation
 
       - name: Sign release artifacts
         env:
