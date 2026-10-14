@@ -46,7 +46,7 @@ Node SEA automatically.
 
 ## Publish
 
-Bump `packages/zappi-signer/package.json` first — the workflow refuses a tag
+Bump `package.json` first — the workflow refuses a tag
 that does not match the package version, so a stale binary can never be
 published under an old version number again.
 

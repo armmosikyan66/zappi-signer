@@ -70,11 +70,11 @@ jobs:
       - name: Verify tag matches package.json version
         run: |
           set -euo pipefail
-          pkg_version="$(node -p "require('./packages/zappi-signer/package.json').version")"
+          pkg_version="$(node -p "require('./package.json').version")"
           expected="zappi-signer-v${pkg_version}"
           if [ "${{ github.ref_name }}" != "$expected" ]; then
-            echo "::error::tag ${{ github.ref_name }} does not match packages/zappi-signer version $pkg_version (expected tag $expected)."
-            echo "::error::Bump packages/zappi-signer/package.json, commit, then retag."
+            echo "::error::tag ${{ github.ref_name }} does not match package.json version $pkg_version (expected tag $expected)."
+            echo "::error::Bump package.json, commit, then retag."
             exit 1
           fi
 
