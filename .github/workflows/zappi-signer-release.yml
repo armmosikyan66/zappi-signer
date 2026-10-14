@@ -100,6 +100,20 @@ jobs:
           set -euo pipefail
           npm run build:bin
 
+      # Gate the release on the real artifact: the wallet-first provision path
+      # does full Spark gRPC init but no backend calls. Skips on linux (no
+      # secret service); catches runtime-specific stalls (Bun-compiled gRPC
+      # failure, see docs/agent.md).
+      - name: Smoke-test standalone binary
+        if: matrix.keychain || matrix.target == 'win-x64'
+        run: |
+          set -euo pipefail
+          ext=""
+          if [ "$TARGET" = "win-x64" ]; then
+            ext=".exe"
+          fi
+          node scripts/smoke-bin.mjs "dist/bin/zappi-signer-${TARGET}${ext}" 120000
+
       - name: Build macOS keychain helper
         if: matrix.keychain
         run: |

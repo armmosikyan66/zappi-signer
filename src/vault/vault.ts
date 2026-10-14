@@ -1134,9 +1134,9 @@ function decodeB64(value: string, expected: number | null): Buffer {
 function resolveCreatePotId(input: CreateVaultInput, pots: readonly PotEntry[]): string {
   if (input.potId === undefined) return `pot_${randomBytes(16).toString('hex')}`
   const normalized = input.potId.trim().toLowerCase()
-  if (!SERVER_POT_ID_RE.test(normalized)) throw new PotError('could not create pot')
+  if (!SERVER_POT_ID_RE.test(normalized)) throw new PotError('pot id is not a server pot id', 'POT_ID_MALFORMED')
   if (input.provisionId !== undefined && !PROVISION_ID_RE.test(input.provisionId)) {
-    throw new PotError('could not create pot')
+    throw new PotError('provision id is malformed', 'PROVISION_ID_MALFORMED')
   }
   if (pots.some((pot) => pot.potId === normalized)) throw new PotError('pot already provisioned')
   return normalized
@@ -1193,12 +1193,12 @@ function wipeAll(pots: readonly PotEntry[]): void {
 }
 
 function assertPositions(positions: readonly number[]): void {
-  if (positions.length !== 3) throw new PotError('could not create pot')
+  if (positions.length !== 3) throw new PotError('backup positions are invalid', 'POSITIONS_INVALID')
   const unique = new Set(positions)
-  if (unique.size !== 3) throw new PotError('could not create pot')
+  if (unique.size !== 3) throw new PotError('backup positions are invalid', 'POSITIONS_INVALID')
   for (const position of positions) {
     if (!Number.isInteger(position) || position < 0 || position > 11) {
-      throw new PotError('could not create pot')
+      throw new PotError('backup positions are invalid', 'POSITIONS_INVALID')
     }
   }
 }

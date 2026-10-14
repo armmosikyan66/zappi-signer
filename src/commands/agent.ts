@@ -98,10 +98,10 @@ export async function runAgentProvision(input: {
 }): Promise<AgentProvisionResult> {
   const potId = input.potId.trim().toLowerCase()
   if (!SERVER_POT_ID_RE.test(potId)) {
-    throw new PotError('pot id is not a server pot id')
+    throw new PotError('pot id is not a server pot id', 'POT_ID_MALFORMED')
   }
   if (input.label !== undefined && !usableLabel(input.label)) {
-    throw new PotError('could not create pot')
+    throw new PotError('label is unusable', 'LABEL_INVALID')
   }
   // Idempotent resume: the wallet for this pot already exists locally.
   const existing = (await input.vault.list()).find((pot) => pot.potId === potId)

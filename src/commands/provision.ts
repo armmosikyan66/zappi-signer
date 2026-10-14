@@ -18,6 +18,7 @@ import {
   verifyBindingReceipt,
   type NonceStore,
 } from '../intent.js'
+import { debugCause } from '../log.js'
 import { utcDay } from '../policy/policy.js'
 import { assertSparkAddress } from '../spark/address.js'
 import { type SparkSigner } from '../spark/signer.js'
@@ -65,7 +66,7 @@ export async function runProvision(input: {
   potLabel?: string
 }): Promise<ProvisionResult> {
   if (input.potLabel !== undefined && !usableLabel(input.potLabel)) {
-    throw new PotError('could not create pot')
+    throw new PotError('label is unusable', 'LABEL_INVALID')
   }
   const serverPubkey = input.trust.serverPubkey
   if (!serverPubkey) throw new PotError('signer trust is not pinned', 'TRUST_UNPINNED')
@@ -164,13 +165,23 @@ export async function derivePot(spark: SparkSigner, phrase: Uint8Array): Promise
   try {
     const derived = await spark.derive(phrase, 'MAINNET')
     assertSparkAddress(derived.address)
-    if (!PUBKEY_RE.test(derived.pubkey)) throw new PotError('could not create pot')
+    if (!PUBKEY_RE.test(derived.pubkey)) throw new PotError('spark derive returned an invalid pubkey', 'SPARK_DERIVE_INVALID')
     return { address: derived.address, pubkey: derived.pubkey }
   } catch (error) {
-    if (error instanceof PotError && error.message === 'could not create pot') throw error
-    if (error instanceof PotError) throw new PotError('could not create pot')
-    throw new PotError('could not create pot')
+    if (error instanceof PotError) {
+      // Coded errors (and the legacy explicit collapse) pass through intact.
+      if (error.code !== undefined || error.message === 'could not create pot') throw error
+      if (error.message === 'could not reach Spark') throw sparkUnreachable(error)
+      throw new PotError('could not create pot', 'SPARK_DERIVE_INVALID')
+    }
+    throw sparkUnreachable(error)
   }
+}
+
+/** Swallowed Spark/network causes become one safe code; debugCause explains why under ZAPPI_SIGNER_DEBUG=1. */
+function sparkUnreachable(error: unknown): PotError {
+  debugCause(error)
+  return new PotError('spark unreachable', 'SPARK_UNREACHABLE')
 }
 
 export async function signChallenge(
@@ -183,12 +194,15 @@ export async function signChallenge(
   try {
     signed = await spark.signRelay(phrase, 'MAINNET', message)
   } catch (error) {
-    if (error instanceof PotError) throw new PotError('could not create pot')
-    throw new PotError('could not create pot')
+    if (error instanceof PotError && error.code !== undefined) throw error
+    debugCause(error)
+    throw new PotError('could not sign the challenge', 'SPARK_SIGN_FAILED')
   }
-  if (signed.pubkey.toLowerCase() !== pubkey.toLowerCase()) throw new PotError('could not create pot')
+  if (signed.pubkey.toLowerCase() !== pubkey.toLowerCase()) {
+    throw new PotError('signature pubkey does not match the derived pubkey', 'SPARK_SIGN_MISMATCH')
+  }
   const signature = signed.signature.trim().toLowerCase()
-  if (!isIdentitySignature(signature)) throw new PotError('could not create pot')
+  if (!isIdentitySignature(signature)) throw new PotError('signature is malformed', 'SPARK_SIGN_FAILED')
   return signature
 }
 

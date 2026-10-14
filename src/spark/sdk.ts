@@ -1,5 +1,5 @@
 import { PotError } from '../errors.js'
-import { redact } from '../log.js'
+import { debugCause, redact } from '../log.js'
 import type { SparkNetworkName } from '../vault/vault.js'
 import type { SparkSigner } from './signer.js'
 
@@ -93,7 +93,8 @@ async function withWallet<T>(
     })
   } catch (error) {
     if (error instanceof PotError) throw error
-    throw new PotError('could not reach Spark')
+    debugCause(error)
+    throw new PotError('could not reach Spark', 'SPARK_UNREACHABLE')
   } finally {
     phraseBytes.fill(0)
   }

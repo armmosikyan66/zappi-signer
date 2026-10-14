@@ -15,8 +15,12 @@
  *      @napi-rs/keyring to that shim, and define
  *      process.env.ZAPPI_SIGNER_STANDALONE = "1".
  *   3. Compile the bundle:
- *      - Bun (preferred): bun build --compile --target=bun-<triple>
- *      - Node SEA (fallback): sea-config + postject injection.
+ *      - Node SEA (default): sea-config + postject injection. The Bun-compiled
+ *        binary stalls on the Spark gRPC connection setup (auth
+ *        get_challenge misses its 10s deadline; see docs/agent.md), so SEA is
+ *        the shipped runtime until Bun passes the release smoke test.
+ *      - Bun (opt-in): set ZAPPI_SIGNER_BUN_COMPILE=1 to try
+ *        bun build --compile --target=bun-<triple>, falling back to SEA.
  *
  * Output: dist/bin/zappi-signer-<target>[.exe] (mode 0500).
  */
@@ -213,21 +217,30 @@ async function main() {
   })
 
   const outPath = join(pkgRoot, 'dist', 'bin', `zappi-signer-${target}${ext}`)
-  const bun = run('bun', ['build', '--compile', `--target=${bunTarget}`, bundlePath, '--outfile', outPath])
-  let bunOutputUsable = bun.ok && existsSync(outPath)
-  if (bunOutputUsable && target.startsWith('darwin-')) {
-    // Bun emits a malformed LC_CODE_SIGNATURE that macOS kills at exec time;
-    // strip it and re-sign ad hoc so the binary actually runs.
-    run('codesign', ['--remove-signature', outPath])
-    const resign = run('codesign', ['--sign', '-', '--force', outPath])
-    bunOutputUsable = resign.ok && codeSignatureOk(outPath, target)
+  // Node SEA is the default: the Bun-compiled binary stalls the Spark gRPC
+  // transport (get_challenge DEADLINE_EXCEEDED at the 10s auth deadline).
+  // Opt back into Bun with ZAPPI_SIGNER_BUN_COMPILE=1; the smoke test
+  // (scripts/smoke-bin.mjs) must pass before shipping a Bun build.
+  const useBun = process.env.ZAPPI_SIGNER_BUN_COMPILE === '1'
+  let bunOutputUsable = false
+  if (useBun) {
+    const bun = run('bun', ['build', '--compile', `--target=${bunTarget}`, bundlePath, '--outfile', outPath])
+    bunOutputUsable = bun.ok && existsSync(outPath)
+    if (bunOutputUsable && target.startsWith('darwin-')) {
+      // Bun emits a malformed LC_CODE_SIGNATURE that macOS kills at exec time;
+      // strip it and re-sign ad hoc so the binary actually runs.
+      run('codesign', ['--remove-signature', outPath])
+      const resign = run('codesign', ['--sign', '-', '--force', outPath])
+      bunOutputUsable = resign.ok && codeSignatureOk(outPath, target)
+    }
+    if (bunOutputUsable) {
+      console.log(`[build-bin] ${target}: bun --compile -> ${outPath}`)
+    }
   }
-  if (bunOutputUsable) {
-    console.log(`[build-bin] ${target}: bun --compile -> ${outPath}`)
-  } else {
-    if (bun.output) console.warn(`[build-bin] bun failed:\n${bun.output}`)
-    if (bun.ok) console.warn('[build-bin] bun output failed the code-signature check; falling back to Node SEA')
-    else console.warn('[build-bin] falling back to Node SEA')
+  if (!bunOutputUsable) {
+    if (useBun) {
+      console.warn('[build-bin] bun output unusable; falling back to Node SEA')
+    }
     rmSync(outPath, { force: true })
     buildSea(bundlePath, outPath, buildDir, target)
     console.log(`[build-bin] ${target}: node SEA -> ${outPath}`)

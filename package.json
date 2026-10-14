@@ -22,6 +22,9 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "eslint src test",
     "test": "vitest run",
+    "smoke:bin": "node scripts/smoke-bin.mjs",
+    "sync:local": "node scripts/sync-local.mjs",
+    "release": "node scripts/release.mjs",
     "start": "node dist/index.js",
     "sign:release": "node scripts/sign-release.mjs"
   },

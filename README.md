@@ -18,6 +18,19 @@ node dist/index.js --help
 
 `node dist/index.js` and the `zappi-signer` bin take the same arguments. `--help` prints the command list and exits 0.
 
+## Development
+
+```bash
+npm run sync:local   # build + refresh the installed zappi-signer command (wrapper over the release bundle)
+npm run smoke:bin -- dist/bin/zappi-signer-<target>   # CI-only smoke test; refuses on machines with a real vault
+npm run release      # patch bump + tag; CI builds, smoke-tests, signs, and publishes
+npm run release -- minor   # or: major | <explicit version>
+```
+
+`sync:local` never touches the vault, keychain, or trust pin. The release tag
+triggers `.github/workflows/zappi-signer-release.yml`; the smoke test gates
+the release (see [docs/agent.md](docs/agent.md)).
+
 ## Setup
 
 The client accepts `https`, and `http` only for `127.0.0.1`, `localhost`, or `[::1]`. Any other `http` host is refused, as are userinfo, a query string, and a fragment. Request paths already start with `/api`, so `ZAPPI_SIGNER_API_URL` is the origin (a path prefix is optional and is not `/api` by itself). Local Nest on this machine is `http://127.0.0.1:3011`.
@@ -35,6 +48,8 @@ export ZAPPI_POT_ID='<nest-pot-uuid>'
 The vault file is version 4. The `kind` string is `zappi-pots-mcp`. On macOS and Linux the path is `~/.zappi-signer/seed-vault.json`. The keychain service is `zappi-signer`. The first `provision` stores a machine-generated unlock secret in the account `seed-vault-unlock`. Opening the vault uses that item. The recovery passphrase is only for `backup` and `restore`.
 
 `ZAPPI_SIGNER_RECOVERY`, when set to a non-empty string, is that recovery passphrase. Otherwise a TTY prompts `Recovery passphrase: `. There is no passphrase flag. A non-TTY `backup` or `restore` without the environment variable fails with `vault locked`.
+
+`ZAPPI_SIGNER_DEBUG=1` makes swallowed Spark causes print one redacted line on stderr before the failure: the error name, a code if set, and standalone gRPC/OS status tokens (for example `SPARK_UNREACHABLE` with `DEADLINE_EXCEEDED`). Never the raw message.
 
 ## Commands
 
@@ -116,6 +131,7 @@ zappi-signer restore --pot pot_0123456789abcdef0123456789abcdef --json < pot.bac
 
 ## More detail
 
+- [docs/agent.md](docs/agent.md) — agent playbook: wallet-first ceremony, spend flow, troubleshooting
 - [docs/architecture.md](docs/architecture.md) — trust invariants, module map, spend sequence
 - [docs/protocol.md](docs/protocol.md) — endpoints and divergences
 - [docs/threat-model.md](docs/threat-model.md) — Tier A, B, and C
