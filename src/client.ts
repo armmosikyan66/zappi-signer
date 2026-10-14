@@ -20,6 +20,42 @@ import { potClientTokenAccount, type KeyStore } from './keystore/types.js'
 
 export const POT_CLIENT_HEADER = 'x-zappi-pot-client'
 
+/**
+ * Signer-auth fallback headers. MCP wallet-first free pots never go through
+ * an attach ceremony, so no pot client token exists for them. The signer
+ * instead signs each request with the pot's Spark identity key; Nest derives
+ * the expected public key from the pot's stored sparkAddress. The message
+ * format is duplicated on the server (pot-signer-auth.ts) and pinned by tests.
+ */
+export const POT_SIGNER_POT_HEADER = 'x-zappi-pot-id'
+export const POT_SIGNER_STAMP_HEADER = 'x-zappi-pot-signer-stamp'
+export const POT_SIGNER_SIGNATURE_HEADER = 'x-zappi-pot-signer-signature'
+
+export function potSignerAuthMessage(input: {
+  scope: string
+  potId: string
+  subject: string
+  stamp: string
+}): string {
+  return `zappi-pot-signer:v1:${input.scope}:${input.potId}:${input.subject}:${input.stamp}`
+}
+
+/** Signed material for one API call. The signature binds scope+potId+subject+stamp. */
+export interface SignerAuthMaterial {
+  stamp: string
+  signature: string
+}
+
+/**
+ * Produces an identity-key signature for one signer API call. Called only
+ * when the keychain has no pot client token for the pot.
+ */
+export type SignerAuthProvider = (input: {
+  scope: 'get' | 'authorize' | 'receipt'
+  subject: string
+  potId: string
+}) => Promise<SignerAuthMaterial>
+
 const REFUSE = 'refused to spend'
 const DEFAULT_TIMEOUT_MS = 10_000
 const MAX_TIMEOUT_MS = 60_000
@@ -114,6 +150,12 @@ export interface SignerBackendClientOptions {
   env?: Readonly<Record<string, string | undefined>>
   /** Finite deadline in milliseconds. Failure refuses the spend. */
   timeoutMs?: number
+  /**
+   * Identity-key signing fallback for pots with no keychain client token
+   * (MCP wallet-first free pots). When the token is absent, each request is
+   * signed with the pot's Spark identity key instead.
+   */
+  signerAuth?: SignerAuthProvider
 }
 
 type FetchResult =
@@ -126,6 +168,7 @@ export class SignerBackendClient {
   private readonly fetchImpl: typeof fetch
   private readonly keystore: KeyStore
   private readonly timeoutMs: number
+  private readonly signerAuth?: SignerAuthProvider
 
   constructor(options: SignerBackendClientOptions) {
     this.keystore = options.keystore
@@ -140,6 +183,7 @@ export class SignerBackendClient {
         ? options.baseUrl
         : (options.env ?? process.env)[SIGNER_API_URL_ENV]
     this.baseUrl = signerApiBaseUrl(raw)
+    this.signerAuth = options.signerAuth
   }
 
   /** Public spend-request lookup. potId selects the keychain token, not the path. */
@@ -149,6 +193,8 @@ export class SignerBackendClient {
       'GET',
       `/api/wallet/pots/client-spend-requests/${encodeURIComponent(request)}`,
       potId,
+      undefined,
+      { scope: 'get', subject: request },
     )
     return parseClientSpendRequest(body)
   }
@@ -167,6 +213,7 @@ export class SignerBackendClient {
       `/api/wallet/pots/${encodeURIComponent(uuid(potId))}/spend-authorizations`,
       potId,
       payload,
+      { scope: 'authorize', subject: payload.idempotencyKey },
     )
     return parseSpendAuthorization(response)
   }
@@ -185,6 +232,7 @@ export class SignerBackendClient {
       `/api/wallet/pots/${encodeURIComponent(uuid(potId))}/spend-receipts`,
       potId,
       payload,
+      { scope: 'receipt', subject: payload.intentId },
     )
     return parseSpendReceipt(response)
   }
@@ -200,13 +248,28 @@ export class SignerBackendClient {
     path: string,
     potId: string | null,
     jsonBody?: unknown,
+    signerAuthScope?: { scope: 'get' | 'authorize' | 'receipt'; subject: string },
   ): Promise<unknown> {
     const url = endpoint(this.baseUrl, path)
     const headers: Record<string, string> = { accept: 'application/json' }
     if (potId !== null) {
-      const token = await this.tokenFor(potId)
-      if (new URL(url).pathname.split('/').includes(token)) refuse()
-      headers[POT_CLIENT_HEADER] = token
+      const token = await this.tokenOrNull(potId)
+      if (token !== null) {
+        if (new URL(url).pathname.split('/').includes(token)) refuse()
+        headers[POT_CLIENT_HEADER] = token
+      } else if (this.signerAuth && signerAuthScope) {
+        const id = uuid(potId)
+        const material = await this.signerAuth({
+          scope: signerAuthScope.scope,
+          subject: signerAuthScope.subject,
+          potId: id,
+        })
+        headers[POT_SIGNER_POT_HEADER] = id
+        headers[POT_SIGNER_STAMP_HEADER] = material.stamp
+        headers[POT_SIGNER_SIGNATURE_HEADER] = material.signature
+      } else {
+        refuse()
+      }
     }
     let body: string | undefined
     if (jsonBody !== undefined) {
@@ -234,17 +297,22 @@ export class SignerBackendClient {
     }
   }
 
-  private async tokenFor(potId: string): Promise<string> {
+  /** Keychain token for the pot, or null when the keychain has none. */
+  private async tokenOrNull(potId: string): Promise<string | null> {
     const id = uuid(potId)
-    let stored: string | null
     try {
-      stored = await getPotClientToken(this.keystore, id)
+      const stored = await getPotClientToken(this.keystore, id)
+      return stored === null ? null : usableToken(stored)
     } catch (error) {
       if (error instanceof PotError) throw error
       refuse()
     }
+  }
+
+  private async tokenFor(potId: string): Promise<string> {
+    const stored = await this.tokenOrNull(potId)
     if (stored === null) refuse()
-    return usableToken(stored)
+    return stored
   }
 }
 

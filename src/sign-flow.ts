@@ -17,7 +17,9 @@
 import { createInterface } from 'node:readline/promises'
 import {
   SignerBackendClient,
+  potSignerAuthMessage,
   type ClientSpendRequestResponse,
+  type SignerAuthProvider,
   type SpendAuthorizationBody,
   type SpendAuthorizationResponse,
   type SpendReceiptBody,
@@ -38,6 +40,7 @@ import { NonceLedger, defaultNonceLedgerPath } from './intent-store.js'
 import type { KeyStore } from './keystore/types.js'
 import { assertSealedPolicy } from './policy/enforce.js'
 import type { PotRole, SpendingPolicy } from './policy/policy.js'
+import type { SparkSigner } from './spark/signer.js'
 import { FileSpendJournal, defaultSpendJournalPath, type SpendJournal } from './spend-journal.js'
 import { sendUsdbFromPot, type SendUsdbFromPotInput, type SendUsdbFromPotResult } from './spark/usdb.js'
 import { loadPinnedTrust, verifyPinnedTrust, type PinnedTrust } from './trust.js'
@@ -85,6 +88,8 @@ export interface SignCommandOptions {
   keystore?: KeyStore
   client?: SpendClient
   vault?: SignVault
+  /** Identity-key signer used by the signer-auth fallback. Production builds createSdkSparkSigner. */
+  spark?: SparkSigner
   clock?: () => Date
   ledger?: NonceStore
   journal?: SpendJournal
@@ -289,7 +294,69 @@ async function openClient(options: SignCommandOptions, env: NodeJS.ProcessEnv): 
     baseUrl: options.baseUrl,
     env,
     ...(options.timeoutMs !== undefined ? { timeoutMs: options.timeoutMs } : {}),
+    signerAuth: signerAuthProvider(options, env, keystore),
   })
+}
+
+interface SignerAuthVaultStore {
+  snapshot(potId?: string): Promise<{
+    potId: string
+    address: string
+    pubkey: string
+    network: SparkNetworkName
+  } | null>
+  withMnemonic<T>(potId: string | undefined, fn: (ctx: MnemonicContext) => Promise<T>): Promise<T>
+}
+
+/**
+ * Signer-auth fallback: sign each API call with the pot's Spark identity key.
+ * Used only when the keychain has no pot client token for the pot — the MCP
+ * wallet-first free-pot flow never runs an attach ceremony, so those pots
+ * have no token. The vault record supplies the key material; the server
+ * derives the expected public key from the pot's stored sparkAddress.
+ */
+export function signerAuthProvider(
+  options: Pick<SignCommandOptions, 'vaultPath' | 'clock' | 'spark'>,
+  env: NodeJS.ProcessEnv,
+  keystore: KeyStore,
+): SignerAuthProvider {
+  let storePromise: Promise<SignerAuthVaultStore> | undefined
+  let spark: SparkSigner | undefined
+  return async ({ scope, subject, potId }) => {
+    if (!storePromise) {
+      storePromise = (async () => {
+        const { VaultStore } = await import('./vault/vault.js')
+        const { defaultVaultPath } = await import('./paths.js')
+        const store: SignerAuthVaultStore = new VaultStore({
+          vaultPath: options.vaultPath ?? defaultVaultPath(env),
+          keystore,
+        })
+        return store
+      })()
+    }
+    const store = await storePromise
+    const snap = await store.snapshot(potId)
+    if (!snap || snap.pubkey.length === 0) throw new PotError('refused to spend')
+    const stamp = (options.clock ? options.clock() : new Date()).toISOString()
+    const message = potSignerAuthMessage({ scope, potId, subject, stamp })
+    const signature = await store.withMnemonic(potId, async (ctx) => {
+      if (ctx.address !== snap.address || ctx.pubkey.toLowerCase() !== snap.pubkey.toLowerCase()) {
+        throw new PotError('refused to spend')
+      }
+      const signer = options.spark ?? (spark ??= await createSdkSparkSigner())
+      const signed = await signer.signRelay(ctx.mnemonic, ctx.network, message)
+      if (signed.pubkey.toLowerCase() !== ctx.pubkey.toLowerCase()) {
+        throw new PotError('refused to spend')
+      }
+      return signed.signature.trim().toLowerCase()
+    })
+    return { stamp, signature }
+  }
+}
+
+async function createSdkSparkSigner(): Promise<SparkSigner> {
+  const { createSdkSparkSigner } = await import('./spark/sdk.js')
+  return createSdkSparkSigner()
 }
 
 async function openVault(options: SignCommandOptions, env: NodeJS.ProcessEnv): Promise<SignVault> {

@@ -43,7 +43,7 @@ export ZAPPI_POT_ID='<nest-pot-uuid>'
 
 `ZAPPI_SIGNER_SERVER_PUBKEY` is the install pin. When both the environment variable and `~/.zappi-signer/trust.json` set `serverPubkey`, the environment variable wins. A missing trust file is an empty key map. The file shape is `{ "keys": { "<keyId>": "<hex pubkey>" }, "serverPubkey": "<hex>" }`.
 
-`sign` and `status` do not take `--pot`. They read `ZAPPI_POT_ID`. That value must be a UUID. It selects the keychain account `pot-client-token-<potId>` (the pot id is lowercased). The header on those requests is `x-zappi-pot-client`. The CLI has no flag for the token.
+`sign` and `status` do not take `--pot`. They read `ZAPPI_POT_ID`. That value must be a UUID. It selects the keychain account `pot-client-token-<potId>` (the pot id is lowercased). The header on those requests is `x-zappi-pot-client`. The CLI has no flag for the token. When the token is absent — a wallet-first MCP free pot never went through the attach ceremony, so it never minted one — the signer signs each request with the vault's Spark identity key instead: the message `zappi-pot-signer:v1:<scope>:<potId>:<subject>:<stamp>` sent as the `x-zappi-pot-signer-stamp` and `x-zappi-pot-signer-signature` headers with `x-zappi-pot-id` selecting the pot. Without a token or the vault identity the command refuses.
 
 The vault file is version 4. The `kind` string is `zappi-pots-mcp`. On macOS and Linux the path is `~/.zappi-signer/seed-vault.json`. The keychain service is `zappi-signer`. The first `provision` stores a machine-generated unlock secret in the account `seed-vault-unlock`. Opening the vault uses that item. The recovery passphrase is only for `backup` and `restore`.
 

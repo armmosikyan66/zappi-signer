@@ -1,5 +1,5 @@
 import { expect, test } from 'vitest'
-import { SignerBackendClient, setPotClientToken, POT_CLIENT_HEADER, type SpendReceiptStatus } from '../src/client.js'
+import { SignerBackendClient, setPotClientToken, potSignerAuthMessage, POT_CLIENT_HEADER, type SpendReceiptStatus } from '../src/client.js'
 import { SIGNER_API_URL_ENV } from '../src/config.js'
 import { PotError, publicMessage } from '../src/errors.js'
 import { MemoryKeyStore } from '../src/keystore/memory.js'
@@ -288,6 +288,100 @@ test('GETs signer trust without the pot client token', async () => {
   expect(call.url).not.toContain(TOKEN)
   expect(headerRecord(call.init)[POT_CLIENT_HEADER]).toBeUndefined()
   expect(new Headers(call.init.headers).has(POT_CLIENT_HEADER)).toBe(false)
+})
+
+test('signs with the identity key when no pot client token exists', async () => {
+  const { fetchImpl, calls } = recordedFetch((url, init) => {
+    if (url.endsWith(`/client-spend-requests/${REQUEST_ID}`)) return Response.json(spendRequestBody())
+    if (url.endsWith('/spend-authorizations')) return Response.json(authorizationBody(), { status: 201 })
+    if (url.endsWith('/spend-receipts')) {
+      const sent = JSON.parse(String(init.body)) as { intentId: string; status: string; txid?: string }
+      return Response.json({
+        intentId: sent.intentId,
+        status: 'receipted',
+        txid: sent.txid ?? null,
+        receiptStatus: sent.status,
+      })
+    }
+    return new Response('no route', { status: 500 })
+  })
+  const keystore = new MemoryKeyStore()
+  const provided: { scope: string; subject: string; potId: string }[] = []
+  const api = new SignerBackendClient({
+    keystore,
+    fetch: fetchImpl,
+    baseUrl: BASE,
+    timeoutMs: 1_000,
+    signerAuth: async (input) => {
+      provided.push(input)
+      return { stamp: '2026-10-14T12:00:00.000Z', signature: 'ab'.repeat(32) }
+    },
+  })
+
+  const view = await api.getClientSpendRequest(POT_ID, REQUEST_ID)
+  expect(view.status).toBe('authorization_required')
+  expect(provided).toEqual([
+    { scope: 'get', subject: REQUEST_ID, potId: POT_ID },
+  ])
+  const lookup = calls[0]
+  if (!lookup) throw new Error('missing lookup')
+  const lookupHeaders = headerRecord(lookup.init)
+  expect(lookupHeaders[POT_CLIENT_HEADER]).toBeUndefined()
+  expect(lookupHeaders['x-zappi-pot-id']).toBe(POT_ID)
+  expect(lookupHeaders['x-zappi-pot-signer-stamp']).toBe('2026-10-14T12:00:00.000Z')
+  expect(lookupHeaders['x-zappi-pot-signer-signature']).toBe('ab'.repeat(32))
+
+  const issued = await api.createSpendAuthorization(POT_ID, {
+    approvalId: APPROVAL_ID,
+    idempotencyKey: REQUEST_ID,
+  })
+  expect(issued.intent.intentId).toBe(INTENT_ID)
+  expect(provided[1]).toEqual({ scope: 'authorize', subject: REQUEST_ID, potId: POT_ID })
+  const authorizeHeaders = headerRecord(calls[1]?.init ?? {})
+  expect(authorizeHeaders[POT_CLIENT_HEADER]).toBeUndefined()
+  expect(authorizeHeaders['x-zappi-pot-id']).toBe(POT_ID)
+
+  await api.postSpendReceipt(POT_ID, { intentId: INTENT_ID, status: 'submitted', txid: TXID })
+  expect(provided[2]).toEqual({ scope: 'receipt', subject: INTENT_ID, potId: POT_ID })
+})
+
+test('prefers the keychain token and does not call the signer-auth provider', async () => {
+  const { fetchImpl, calls } = recordedFetch(() => Response.json(spendRequestBody()))
+  const keystore = new MemoryKeyStore()
+  await keystore.setSecret(ACCOUNT, TOKEN)
+  let providerCalls = 0
+  const api = new SignerBackendClient({
+    keystore,
+    fetch: fetchImpl,
+    baseUrl: BASE,
+    timeoutMs: 1_000,
+    signerAuth: async () => {
+      providerCalls += 1
+      return { stamp: '2026-10-14T12:00:00.000Z', signature: 'ab'.repeat(32) }
+    },
+  })
+  const view = await api.getClientSpendRequest(POT_ID, REQUEST_ID)
+  expect(view.status).toBe('authorization_required')
+  expect(providerCalls).toBe(0)
+  expect(headerRecord(calls[0]?.init ?? {})[POT_CLIENT_HEADER]).toBe(TOKEN)
+})
+
+test('refuses when there is neither a token nor a signer-auth provider', async () => {
+  const { fetchImpl, calls } = recordedFetch(() => Response.json(spendRequestBody()))
+  const api = clientFor(fetchImpl, BASE)
+  await expect(api.getClientSpendRequest(POT_ID, REQUEST_ID)).rejects.toThrow('refused to spend')
+  expect(calls).toHaveLength(0)
+})
+
+test('builds the signer-auth message the server verifies', () => {
+  expect(
+    potSignerAuthMessage({
+      scope: 'get',
+      potId: POT_ID,
+      subject: REQUEST_ID,
+      stamp: '2026-10-14T12:00:00.000Z',
+    }),
+  ).toBe(`zappi-pot-signer:v1:get:${POT_ID}:${REQUEST_ID}:2026-10-14T12:00:00.000Z`)
 })
 
 test('posts spend receipt statuses submitted, confirmed, and uncertain', async () => {

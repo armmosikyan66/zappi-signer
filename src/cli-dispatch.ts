@@ -23,7 +23,12 @@ import { PotError } from './errors.js'
 import type { KeyStore } from './keystore/types.js'
 import type { SpendingPolicy } from './policy/policy.js'
 import type { SparkSigner } from './spark/signer.js'
-import { type SignCommandOptions, type SignVault, type SpendClient } from './sign-flow.js'
+import {
+  signerAuthProvider,
+  type SignCommandOptions,
+  type SignVault,
+  type SpendClient,
+} from './sign-flow.js'
 import { loadPinnedTrust, saveServerPubkey, type PinnedTrust } from './trust.js'
 import type { NonceStore } from './intent.js'
 import type { VaultStore } from './vault/vault.js'
@@ -72,7 +77,7 @@ interface ProvisionVault {
 type CommandVault = PolicyCommandVault | BackupCommandVault | RestoreCommandVault | ProvisionVault
 
 interface BackendRequest {
-  request(method: 'GET' | 'POST', path: string, potId: string | null, body?: unknown): Promise<unknown>
+  request(method: 'GET' | 'POST', path: string, potId: string | null, body?: unknown, signerAuthScope?: { scope: 'get' | 'authorize' | 'receipt'; subject: string }): Promise<unknown>
 }
 
 export async function runCliCommand(parsed: ParsedSignerCommand, injected: CliInjected): Promise<void> {
@@ -346,7 +351,12 @@ function statusClient(injected: CliInjected, env: NodeJS.ProcessEnv): StatusClie
     async request(method, path, body) {
       const potId = (injected.potId ?? env[POT_ID_ENV] ?? '').trim()
       if (potId === '') throw new PotError('spend status is unavailable')
-      return backendRequest(await openBackend(injected, env), method, path, potId, body)
+      // The request id is the last path segment; signer-auth signs it as the subject.
+      const prefix = '/api/wallet/pots/client-spend-requests/'
+      const scope = path.startsWith(prefix)
+        ? ({ scope: 'get', subject: path.slice(prefix.length) } as const)
+        : undefined
+      return backendRequest(await openBackend(injected, env), method, path, potId, body, scope)
     },
   }
 }
@@ -395,12 +405,16 @@ async function openKeyStore(injected: CliInjected): Promise<KeyStore> {
 }
 
 async function openBackend(injected: CliInjected, env: NodeJS.ProcessEnv): Promise<SignerBackendClient> {
+  const keystore = await openKeyStore(injected)
   return new SignerBackendClient({
-    keystore: await openKeyStore(injected),
+    keystore,
     fetch: injected.fetchImpl,
     baseUrl: injected.baseUrl,
     env,
     ...(injected.timeoutMs !== undefined ? { timeoutMs: injected.timeoutMs } : {}),
+    // Wallet-first MCP free pots have no pot client token; status still needs
+    // to authenticate, so the identity-key fallback is wired here too.
+    signerAuth: signerAuthProvider(injected, env, keystore),
   })
 }
 
@@ -410,8 +424,9 @@ function backendRequest(
   path: string,
   potId: string | null,
   body?: unknown,
+  signerAuthScope?: { scope: 'get' | 'authorize' | 'receipt'; subject: string },
 ): Promise<unknown> {
-  return (client as unknown as BackendRequest).request(method, path, potId, body)
+  return (client as unknown as BackendRequest).request(method, path, potId, body, signerAuthScope)
 }
 
 async function sparkOf(injected: CliInjected): Promise<SparkSigner> {

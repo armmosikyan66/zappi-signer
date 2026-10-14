@@ -24,7 +24,7 @@ Root can read the vault, ptrace the process, and read keychain material the kern
 
 ## Tier C — MCP only, no shell
 
-If the host gives the agent remote MCP tools and no local execution, the agent cannot read the vault, the keychain, or this binary. Remote `pay`, `send`, and `consume` on a ready free pot return `authorization_required` and `signCommand`. They do not return a seed, a backend signature, or the pot client token. `payment_status` returns the public status and a txid after one has been posted.
+If the host gives the agent remote MCP tools and no local execution, the agent cannot read the vault, the keychain, or this binary. Remote `pay`, `send`, and `consume` on a ready free pot return `authorization_required` and `signCommand`. They do not return a seed, a backend signature, the pot client token, or the signer identity-key signature. `payment_status` returns the public status and a txid after one has been posted.
 
 The older document's Tier C tool list (`provision_free_pot`, `sign_free_spend`, and the other local stdio tools) is the absorbed package's former MCP surface. Those tools are not this CLI. The controls that remain meaningful without a shell are the remote approval row, the install pin, and the sealed policy, and they apply when some other principal runs `zappi-signer`.
 
