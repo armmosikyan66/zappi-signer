@@ -273,7 +273,13 @@ function buildSea(bundlePath, outPath, buildDir, target) {
   copyFileSync(process.execPath, outPath)
   const postjectBin = join(pkgRoot, 'node_modules', '.bin', process.platform === 'win32' ? 'postject.cmd' : 'postject')
   if (!existsSync(postjectBin)) throw new Error('postject is missing. Run `npm install` in packages/zappi-signer.')
-  const inject = run(postjectBin, [outPath, 'NODE_SEA_BLOB', blob, '--sentinel-fuse', SEA_FUSE])
+  const injectArgs = [outPath, 'NODE_SEA_BLOB', blob, '--sentinel-fuse', SEA_FUSE]
+  // macOS only: the SEA blob must live in a Mach-O segment named NODE_SEA.
+  // Without this flag postject writes the section to a default segment the
+  // Node bootstrap never inspects, and the binary segfaults at exec time
+  // (nodejs/postject#76; https://nodejs.org/api/single-executable-applications.html).
+  if (target.startsWith('darwin-')) injectArgs.push('--macho-segment-name', 'NODE_SEA')
+  const inject = run(postjectBin, injectArgs)
   if (!inject.ok) throw new Error(`postject injection failed:\n${inject.output}`)
   if (target.startsWith('darwin-')) {
     // The injected binary's signature is invalid; re-sign ad hoc.
