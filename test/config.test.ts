@@ -75,6 +75,9 @@ describe('loadPinnedApiBaseUrl', () => {
   })
 
   test('a loose file mode refuses', () => {
+    // Windows has no POSIX mode bits. The reader skips that check there,
+    // same as the trust pin, so this assertion is unix-only.
+    if (process.platform === 'win32') return
     const dir = tempState()
     cleanup.push(dir)
     const path = writeConfig(dir, '{"apiBaseUrl":"https://api-dev.zappi.money"}\n')
