@@ -1,4 +1,7 @@
 import { expect, test } from 'vitest'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { SignerBackendClient, setPotClientToken, potSignerAuthMessage, POT_CLIENT_HEADER, type SpendReceiptStatus } from '../src/client.js'
 import { SIGNER_API_URL_ENV } from '../src/config.js'
 import { PotError, publicMessage } from '../src/errors.js'
@@ -132,6 +135,73 @@ test('reads ZAPPI_SIGNER_API_URL when baseUrl is omitted', async () => {
   const call = calls[0]
   if (!call) throw new Error('missing call')
   expect(call.url).toBe('https://from-env.example/api/signer/trust')
+})
+
+test('prefers the env value over the install-time api.json pin', async () => {
+  const { fetchImpl, calls } = recordedFetch(() => Response.json(trustBody()))
+  const dir = mkdtempSync(join(tmpdir(), 'zappi-api-pin-'))
+  const path = join(dir, 'api.json')
+  writeFileSync(path, '{"apiBaseUrl":"https://pinned.example"}\n', { mode: 0o600 })
+  const api = new SignerBackendClient({
+    keystore: new MemoryKeyStore(),
+    fetch: fetchImpl,
+    env: { [SIGNER_API_URL_ENV]: 'https://from-env.example' },
+    apiConfigPath: path,
+    timeoutMs: 1_000,
+  })
+  await api.getSignerTrust()
+  expect(calls[0]?.url).toBe('https://from-env.example/api/signer/trust')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('uses the install-time api.json pin when no env value is set', async () => {
+  const { fetchImpl, calls } = recordedFetch(() => Response.json(trustBody()))
+  const dir = mkdtempSync(join(tmpdir(), 'zappi-api-pin-'))
+  const path = join(dir, 'api.json')
+  writeFileSync(path, '{"apiBaseUrl":"https://pinned.example"}\n', { mode: 0o600 })
+  const api = new SignerBackendClient({
+    keystore: new MemoryKeyStore(),
+    fetch: fetchImpl,
+    env: {},
+    apiConfigPath: path,
+    timeoutMs: 1_000,
+  })
+  await api.getSignerTrust()
+  expect(calls[0]?.url).toBe('https://pinned.example/api/signer/trust')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('falls back to the production default when neither env nor pin is set', async () => {
+  const { fetchImpl, calls } = recordedFetch(() => Response.json(trustBody()))
+  const dir = mkdtempSync(join(tmpdir(), 'zappi-api-pin-'))
+  const api = new SignerBackendClient({
+    keystore: new MemoryKeyStore(),
+    fetch: fetchImpl,
+    env: {},
+    apiConfigPath: join(dir, 'missing.json'),
+    timeoutMs: 1_000,
+  })
+  await api.getSignerTrust()
+  expect(calls[0]?.url).toBe('https://api.zappi.money/api/signer/trust')
+  rmSync(dir, { recursive: true, force: true })
+})
+
+test('a malformed api.json pin refuses instead of guessing', () => {
+  const { fetchImpl } = recordedFetch(() => Response.json(trustBody()))
+  const dir = mkdtempSync(join(tmpdir(), 'zappi-api-pin-'))
+  const path = join(dir, 'api.json')
+  writeFileSync(path, 'not json', { mode: 0o600 })
+  expect(
+    () =>
+      new SignerBackendClient({
+        keystore: new MemoryKeyStore(),
+        fetch: fetchImpl,
+        env: {},
+        apiConfigPath: path,
+        timeoutMs: 1_000,
+      }),
+  ).toThrow('signer api config is unreadable')
+  rmSync(dir, { recursive: true, force: true })
 })
 
 test('accepts loopback http for a local Nest and still refuses public http', async () => {

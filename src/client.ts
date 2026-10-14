@@ -1,5 +1,11 @@
 import { PotError } from './errors.js'
-import { assertSignerBaseUrl, signerApiBaseUrl, SIGNER_API_URL_ENV } from './config.js'
+import {
+  assertSignerBaseUrl,
+  DEFAULT_SIGNER_API_URL,
+  loadPinnedApiBaseUrl,
+  signerApiBaseUrl,
+  SIGNER_API_URL_ENV,
+} from './config.js'
 import { potClientTokenAccount, type KeyStore } from './keystore/types.js'
 
 /**
@@ -148,6 +154,8 @@ export interface SignerBackendClientOptions {
   baseUrl?: string
   /** Read when baseUrl is omitted. Defaults to process.env. */
   env?: Readonly<Record<string, string | undefined>>
+  /** Install-time origin pin location. Defaults to ~/.zappi-signer/api.json. */
+  apiConfigPath?: string
   /** Finite deadline in milliseconds. Failure refuses the spend. */
   timeoutMs?: number
   /**
@@ -178,10 +186,15 @@ export class SignerBackendClient {
     const timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS
     if (!Number.isFinite(timeoutMs) || timeoutMs <= 0 || timeoutMs > MAX_TIMEOUT_MS) refuse()
     this.timeoutMs = timeoutMs
+    const env = options.env ?? process.env
+    const fromEnv = env[SIGNER_API_URL_ENV]?.trim() || undefined
+    // Resolution order: explicit baseUrl (test seam) > ZAPPI_SIGNER_API_URL >
+    // install-time pin (~/.zappi-signer/api.json) > the production default.
     const raw =
-      options.baseUrl !== undefined
-        ? options.baseUrl
-        : (options.env ?? process.env)[SIGNER_API_URL_ENV]
+      options.baseUrl ??
+      fromEnv ??
+      loadPinnedApiBaseUrl({ env, ...(options.apiConfigPath !== undefined ? { configPath: options.apiConfigPath } : {}) }) ??
+      DEFAULT_SIGNER_API_URL
     this.baseUrl = signerApiBaseUrl(raw)
     this.signerAuth = options.signerAuth
   }
