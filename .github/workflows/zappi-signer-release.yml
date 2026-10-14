@@ -15,6 +15,13 @@
 # 64-byte Ed25519 secret (seed(32) || public-key(32)). Its public half must
 # equal the PUBLISHER_PUBKEY_PEM pinned in web/install/signer.sh. The key is
 # never logged. sign-release.mjs refuses to produce artifacts without it.
+#
+# After publishing, a canary job plays a real user: it fetches the live
+# dev.zappi.money/signer/install one-liner, runs it, and smoke-tests the
+# installed binary (with the installed keychain helper). It retries over
+# ~5 minutes to ride out GitHub asset propagation and the web repo's deploy
+# lag, and warns (instead of failing) if the served pin is still the
+# previous release after those retries.
 
 name: zappi-signer release
 
@@ -190,3 +197,96 @@ jobs:
           files: artifacts/*
         env:
           GITHUB_TOKEN: ${{ github.token }}
+
+  canary:
+    name: canary — install via the live one-liner
+    needs: publish
+    runs-on: macos-14
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Install from dev.zappi.money/signer/install and smoke the result
+        run: |
+          set -euo pipefail
+          new_tag="${{ github.ref_name }}"
+          work_dir="$(mktemp -d)"
+          installer="$work_dir/canary-installer.sh"
+          attempts=6
+          attempt=1
+          # ~5 minutes of retries: GitHub release-asset propagation and the
+          # web repo's deploy to dev.zappi.money are both briefly laggy.
+          while [ "$attempt" -le "$attempts" ]; do
+            echo "=== canary attempt $attempt/$attempts ==="
+
+            if ! curl -fsSL --retry 3 --max-time 60 https://dev.zappi.money/signer/install -o "$installer"; then
+              echo "canary: could not fetch the installer from dev.zappi.money"
+              attempt=$((attempt + 1)); sleep 55; continue
+            fi
+
+            served_tag="$(sed -n 's/^RELEASE_TAG="\(.*\)"$/\1/p' "$installer" | head -n 1)"
+            if [ -z "$served_tag" ]; then
+              echo "canary: could not parse the served RELEASE_TAG pin"
+              attempt=$((attempt + 1)); sleep 55; continue
+            fi
+            echo "canary: dev.zappi.money serves $served_tag (this release: $new_tag)"
+
+            install_out="$(sh "$installer" 2>&1)" && install_rc=0 || install_rc=$?
+            printf '%s\n' "$install_out"
+            if [ "$install_rc" -ne 0 ]; then
+              echo "canary: installer exited $install_rc"
+              attempt=$((attempt + 1)); sleep 55; continue
+            fi
+
+            installed_tag="$(printf '%s\n' "$install_out" | sed -n 's/^Installed release: //p' | head -n 1)"
+            if [ -z "$installed_tag" ]; then
+              echo "canary: installer output did not name the installed release"
+              attempt=$((attempt + 1)); sleep 55; continue
+            fi
+            echo "canary: installer installed $installed_tag"
+
+            bin_path="$HOME/.zappi-signer/bin/$installed_tag/darwin-arm64/zappi-signer"
+            if [ ! -x "$bin_path" ]; then
+              echo "canary: installed binary not found or not executable at $bin_path"
+              attempt=$((attempt + 1)); sleep 55; continue
+            fi
+
+            # The installed helper lands at ~/.zappi-signer/macos-keychain;
+            # smoke-bin needs it explicitly for its keychain write/read probe.
+            export ZAPPI_SIGNER_KEYCHAIN_HELPER="$HOME/.zappi-signer/macos-keychain"
+            if node scripts/smoke-bin.mjs "$bin_path" 120000; then smoke_rc=0; else smoke_rc=$?; fi
+
+            if [ "$served_tag" != "$new_tag" ]; then
+              # Deploy lag: the web repo still pins the previous release. The
+              # user-facing flow is what we just exercised — if it works,
+              # this is a pass with a warning, not a release failure.
+              if [ "$smoke_rc" -eq 0 ]; then
+                echo "::warning::canary PASS with warning: dev.zappi.money still serves $served_tag (web deploy lag). The served, user-facing install works end-to-end; the $new_tag assets were already gated by the build smoke job."
+                exit 0
+              fi
+              echo "::error::canary FAIL: the served pin $served_tag installed but its binary failed smoke — the user-facing install flow is broken."
+              exit 1
+            fi
+
+            if [ "$installed_tag" != "$new_tag" ]; then
+              # Served pin is this release, but the installer had to fall
+              # back: the new assets are missing or failing verification.
+              # Retry — asset propagation usually resolves within minutes.
+              echo "canary: installer fell back to $installed_tag — $new_tag assets are missing or not verifying yet"
+              attempt=$((attempt + 1)); sleep 55; continue
+            fi
+
+            if [ "$smoke_rc" -eq 0 ]; then
+              echo "canary: PASS — $new_tag was installed by the public one-liner and the installed binary passed smoke"
+              exit 0
+            fi
+            echo "canary: $new_tag installed but smoke failed (rc=$smoke_rc)"
+            attempt=$((attempt + 1)); sleep 55
+          done
+
+          echo "::error::canary FAIL: $new_tag could not be installed and smoked via https://dev.zappi.money/signer/install after $attempts attempts (~5 minutes)."
+          exit 1

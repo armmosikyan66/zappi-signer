@@ -13,9 +13,10 @@
  *      runs the release smoke test on the real artifacts, signs, and publishes
  *      the GitHub release the installer downloads from.
  *   2. ../web (the web/app repo, staging branch develop): re-pin the one-line
- *      installer (web/install/signer.sh: RELEASE_TAG + MIN_VERSION) so end
- *      users without npm/node get the fixed binary, commit, and push to
- *      develop — which is what deploys dev.zappi.money/signer/install.
+ *      installer (web/install/signer.sh: RELEASE_TAG + FALLBACK_TAG +
+ *      MIN_VERSION) so end users without npm/node get the fixed binary,
+ *      commit, and push to develop — which is what deploys
+ *      dev.zappi.money/signer/install.
  */
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -65,12 +66,26 @@ const oldTag = `zappi-signer-v${prevVersion}`
 
 // Re-pin the one-line installer so users WITHOUT npm/node (its only runtime
 // requirements are sh, curl/wget, and openssl) download the new release.
+//   RELEASE_TAG  -> the new tag
+//   FALLBACK_TAG -> the previous release: the new guaranteed-known-good
+//                   version the installer falls back to if the pinned
+//                   release is missing or broken.
+//   MIN_VERSION  -> the fallback version. The fallback IS the floor, so a
+//                   tampered or rolled-back provenance manifest can never
+//                   push a user below the last known-good release.
+// Pins are rewritten line-wise: the previous values differ pin by pin, so
+// exact-match replaceAll cannot express this.
 let installer = readFileSync(installerPath, 'utf8')
 const before = installer
-installer = installer
-  .replaceAll(`RELEASE_TAG="${oldTag}"`, `RELEASE_TAG="${tag}"`)
-  .replaceAll(`MIN_VERSION="${prevVersion}"`, `MIN_VERSION="${next}"`)
-if (installer === before) die(`could not re-pin ${installerPath} — expected RELEASE_TAG="${oldTag}" and MIN_VERSION="${prevVersion}"`)
+const rePin = (source, name, value) => {
+  const pattern = new RegExp(`^${name}="[^"\\n]*"$`, 'm')
+  if (!pattern.test(source)) die(`${installerPath} is missing its ${name}="..." pin line`)
+  return source.replace(pattern, `${name}="${value}"`)
+}
+installer = rePin(installer, 'RELEASE_TAG', tag)
+installer = rePin(installer, 'FALLBACK_TAG', oldTag)
+installer = rePin(installer, 'MIN_VERSION', prevVersion)
+if (installer === before) die(`could not re-pin ${installerPath} — no pin line changed`)
 writeFileSync(installerPath, installer)
 
 // 1. Signer repo: version bump commit + tag; the tag starts the release build.
