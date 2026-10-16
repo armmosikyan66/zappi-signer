@@ -2,6 +2,7 @@
 import { realpathSync } from 'node:fs'
 import { pathToFileURL } from 'node:url'
 import { runCliCommand, type CliInjected } from './cli-dispatch.js'
+import { guidanceFor } from './error-guidance.js'
 import { publicMessage } from './errors.js'
 import { redact } from './log.js'
 import { signCommand, type SignOutcome } from './sign-flow.js'
@@ -52,7 +53,7 @@ export async function main(
     await runCliCommand(parsed, injected ?? {})
     return 0
   } catch (error) {
-    process.stderr.write(`${safeFailure(error)}\n`)
+    process.stderr.write(`${failureText(error, parsed.json)}\n`)
     return 1
   }
 }
@@ -69,6 +70,20 @@ function safeFailure(error: unknown): string {
     .trim()
   if (!message) return 'request failed'
   return message.length > 200 ? message.slice(0, 200) : message
+}
+
+/** Text mode stays one redacted line. --json is one object on stderr. */
+function failureText(error: unknown, json: boolean): string {
+  const message = safeFailure(error)
+  if (!json) return message
+  const guide = guidanceFor(error)
+  return JSON.stringify({
+    ok: false,
+    code: guide.code,
+    message,
+    next: guide.next,
+    hint: guide.hint,
+  })
 }
 
 export function parseSignerArgv(argv: readonly string[]): CliInvocation | null {

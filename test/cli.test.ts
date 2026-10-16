@@ -128,7 +128,13 @@ test('sign refuses instead of reporting that it is not implemented', async () =>
       process.stdout.write = original
     }
   })
-  expect(err).toBe('refused to spend\n')
+  expect(JSON.parse(err)).toEqual({
+    ok: false,
+    code: null,
+    message: 'refused to spend',
+    next: null,
+    hint: 'Set ZAPPI_POT_ID from the spend result and rerun with --json.',
+  })
   expect(err).not.toContain('not implemented')
   expect(err).not.toContain('abandon')
   expect(err).not.toContain('req-1')
@@ -159,7 +165,20 @@ test('pot commands refuse a missing pot before reading stdin', async () => {
     expect(await main(['backup', '--json'])).toBe(1)
     expect(await main(['restore'])).toBe(1)
   })
-  expect(io.err).toBe('no pot\n'.repeat(5))
+  const lines = io.err.trim().split('\n')
+  expect(lines).toHaveLength(5)
+  expect(lines[0]).toBe('no pot')
+  expect(lines[2]).toBe('no pot')
+  expect(lines[4]).toBe('no pot')
+  for (const line of [lines[1], lines[3]]) {
+    expect(JSON.parse(line ?? '')).toEqual({
+      ok: false,
+      code: null,
+      message: 'no pot',
+      next: null,
+      hint: null,
+    })
+  }
   expect(io.out).toBe('')
   expect(io.err).not.toContain('not implemented')
 })
@@ -240,7 +259,13 @@ test('status refuses a bad request id without calling the client', async () => {
     ).toBe(1)
   })
   expect(calls).toBe(0)
-  expect(io.err).toBe('spend status is unavailable\n')
+  expect(JSON.parse(io.err)).toEqual({
+    ok: false,
+    code: null,
+    message: 'spend status is unavailable',
+    next: null,
+    hint: null,
+  })
   expect(io.out).toBe('')
   expect(io.err).not.toContain('req-1')
   expect(io.err).not.toContain('not implemented')
@@ -343,7 +368,12 @@ test('policy tighten refuses a looser policy and missing user presence', async (
       }),
     ).toBe(1)
   })
-  expect(missing.err).toBe('keychain unavailable\n')
+  expect(JSON.parse(missing.err)).toMatchObject({
+    ok: false,
+    message: 'keychain unavailable',
+    next: null,
+    hint: null,
+  })
   expect(missing.out).toBe('')
   expect(replaced).toBe(0)
 })
@@ -453,7 +483,13 @@ test('recovery comes from the env or a tty prompt and is never printed', async (
     ).toBe(1)
   })
   expect(prompted).toBe(1)
-  expect(fromPrompt.err).toBe('no pot\n')
+  expect(JSON.parse(fromPrompt.err)).toEqual({
+    ok: false,
+    code: null,
+    message: 'no pot',
+    next: null,
+    hint: null,
+  })
   expect(fromPrompt.out).toBe('')
   expectNoSecret(fromPrompt)
 
@@ -468,7 +504,13 @@ test('recovery comes from the env or a tty prompt and is never printed', async (
       }),
     ).toBe(1)
   })
-  expect(locked.err).toBe('vault locked\n')
+  expect(JSON.parse(locked.err)).toEqual({
+    ok: false,
+    code: null,
+    message: 'vault locked',
+    next: null,
+    hint: null,
+  })
   expect(locked.out).toBe('')
   expectNoSecret(locked)
 })

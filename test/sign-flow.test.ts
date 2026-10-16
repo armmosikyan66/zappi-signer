@@ -447,7 +447,13 @@ test('a forged or expired signature refuses before broadcast', async () => {
   const forgedIo = await captureIo(async () => {
     expect(await main(['sign', REQUEST_ID, '--yes', '--json'], forged.injected)).toBe(1)
   })
-  expect(forgedIo.err).toBe('INTENT_BAD_SIGNATURE\n')
+  expect(JSON.parse(forgedIo.err)).toMatchObject({
+    ok: false,
+    code: 'INTENT_BAD_SIGNATURE',
+    message: 'INTENT_BAD_SIGNATURE',
+    next: null,
+    hint: null,
+  })
   expect(forgedIo.out).toBe('')
   expectNoPhrase(forgedIo.err)
   expect(forged.broadcasts).toHaveLength(0)
@@ -637,7 +643,12 @@ test('http and non-2xx responses refuse before a broadcast', async () => {
     expect(code).toBe(1)
   })
   expect(sawHttps).toBe(true)
-  expect(io.err).toBe('refused to spend\n')
+  expect(JSON.parse(io.err)).toMatchObject({
+    ok: false,
+    code: null,
+    message: 'refused to spend',
+    next: null,
+  })
   expect(io.out).toBe('')
   expectNoPhrase(io.err)
   expect(down.broadcasts).toHaveLength(0)
