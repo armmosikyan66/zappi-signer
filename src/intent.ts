@@ -26,6 +26,9 @@ export interface SparkTransferPayload {
   amountSats: number
   maxFeeSats: number
   amountCents?: number
+  /** Server-created tx params. The signer verifies, never invents, them. */
+  tokenIdentifier?: string
+  tokenAmount?: number
 }
 
 export interface LightningPayPayload {
@@ -131,6 +134,9 @@ const sparkPayload = z
     amountSats: positiveInt,
     maxFeeSats: nonNegativeInt,
     amountCents,
+    /** Server-created tx params. The signer verifies, never invents, them. */
+    tokenIdentifier: z.string().min(1).max(MAX_ADDRESS_LEN).optional(),
+    tokenAmount: positiveInt.optional(),
   })
   .strict()
 

@@ -208,6 +208,68 @@ test('refuses a balance that has no canonical btkn1 USDB token', async () => {
   expect(wallet.cleanupConnections).toHaveBeenCalledOnce()
 })
 
+test('broadcasts the server-created tx params after verifying them', async () => {
+  const phrase = fakePhrase()
+  const destination = encodeSparkAddress(new Uint8Array(33).fill(4))
+  const wallet = mockWallet(balanceOf([[CANONICAL, usdb(CANONICAL)]]))
+  const sent = await sendUsdbFromPot({
+    mnemonic: phrase,
+    destination,
+    amountCents: 25,
+    network: 'MAINNET',
+    tokenIdentifier: CANONICAL,
+    tokenAmount: '250000',
+  })
+  expect(sent).toEqual({ txid: 'txid-usdb-1' })
+  expect(wallet.transferTokens).toHaveBeenCalledWith({
+    tokenIdentifier: CANONICAL,
+    tokenAmount: 250_000n,
+    receiverSparkAddress: destination,
+  })
+})
+
+test('refuses server tx params that do not match the pot wallet', async () => {
+  const destination = encodeSparkAddress(new Uint8Array(33).fill(4))
+  const wrongToken = mockWallet(balanceOf([[CANONICAL, usdb(CANONICAL)]]))
+  await expect(
+    sendUsdbFromPot({
+      mnemonic: fakePhrase(),
+      destination,
+      amountCents: 25,
+      network: 'MAINNET',
+      tokenIdentifier: OTHER,
+      tokenAmount: 250_000,
+    }),
+  ).rejects.toThrow(/names token .* but the pot holds/)
+  expect(wrongToken.transferTokens).not.toHaveBeenCalled()
+
+  const wrongAmount = mockWallet(balanceOf([[CANONICAL, usdb(CANONICAL)]]))
+  await expect(
+    sendUsdbFromPot({
+      mnemonic: fakePhrase(),
+      destination,
+      amountCents: 25,
+      network: 'MAINNET',
+      tokenIdentifier: CANONICAL,
+      tokenAmount: 249_999,
+    }),
+  ).rejects.toThrow(/does not match amountCents/)
+  expect(wrongAmount.transferTokens).not.toHaveBeenCalled()
+
+  const badAmount = mockWallet(balanceOf([[CANONICAL, usdb(CANONICAL)]]))
+  await expect(
+    sendUsdbFromPot({
+      mnemonic: fakePhrase(),
+      destination,
+      amountCents: 25,
+      network: 'MAINNET',
+      tokenIdentifier: CANONICAL,
+      tokenAmount: 'not-a-number',
+    }),
+  ).rejects.toThrow(/tokenAmount is not an integer/)
+  expect(badAmount.transferTokens).not.toHaveBeenCalled()
+})
+
 test('a token transfer failure is an uncertain broadcast', async () => {
   const wallet = mockWallet(balanceOf([[CANONICAL, usdb(CANONICAL)]]))
   wallet.transferTokens.mockRejectedValueOnce(new Error('socket closed'))

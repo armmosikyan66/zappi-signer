@@ -10,9 +10,12 @@ import { readTransferId } from './sdk.js'
  *
  * Do not call `SparkSigner.transfer`. That method sends sats.
  * This module does not call it, and it does not call `wallet.transfer`.
- * A spend moves USDB: `amountCents × 10_000` base units (6 decimals), and only
- * the canonical mainnet `btkn1…` token whose ticker is USDB.
- * Any other token id is refused. The recipient address must decode as Spark MAINNET.
+ * A spend moves USDB: the server signs an intent that carries the recipient,
+ * token identifier, and base-unit token amount (`amountCents × 10_000`, 6
+ * decimals); this module verifies those parameters against the pot wallet and
+ * broadcasts exactly what the server created. It never invents parameters.
+ * Params are optional so legacy intents still broadcast with local selection.
+ * The recipient address must decode as Spark MAINNET.
  */
 
 export const USDB_MICRO_UNITS_PER_CENT = 10_000
@@ -39,6 +42,14 @@ export interface SendUsdbFromPotInput {
   network: SparkNetworkName
   /** Spark account. Defaults to 1, the account `createSdkSparkSigner` opens. */
   accountNumber?: number
+  /**
+   * Server-created tx params. When present the signer verifies them against
+   * the pot wallet and broadcasts exactly what the server signed; it never
+   * invents parameters. When absent, the canonical USDB token is selected
+   * locally (legacy intents issued before token params existed).
+   */
+  tokenIdentifier?: string
+  tokenAmount?: number | string | bigint
 }
 
 export interface SendUsdbFromPotResult {
@@ -50,6 +61,9 @@ export interface UsdbBroadcastInput {
   accountIndex: number
   receiverSparkAddress: string
   amountCents: number
+  /** Optional server-created tx params, verified like `sendUsdbFromPot`. */
+  tokenIdentifier?: string
+  tokenAmount?: number | string | bigint
 }
 
 export interface UsdbBroadcastResult {
@@ -161,15 +175,54 @@ export function selectCanonicalUsdbToken(tokenBalances: unknown, network: 'MAINN
   return selected
 }
 
+/**
+ * Resolve the tx parameters for one USDB transfer. The server's signed intent
+ * may carry `tokenIdentifier` and `tokenAmount`; both are verified here before
+ * broadcast. `tokenAmount` must be exactly `amountCents × 10_000` so the
+ * policy-checked cents stay the only source of truth. `tokenIdentifier` must
+ * be the canonical USDB token held by the pot. Params are optional so intents
+ * issued before token params existed still broadcast with local selection.
+ */
+function resolveTxParams(
+  input: SendUsdbFromPotInput,
+  canonical: string,
+  expected: bigint,
+): { tokenIdentifier: string; tokenAmount: bigint } {
+  if (input.tokenIdentifier !== undefined && input.tokenIdentifier !== canonical) {
+    throw new Error(
+      `Server tx names token ${input.tokenIdentifier} but the pot holds ${canonical}. Refusing to sign.`,
+    )
+  }
+  if (input.tokenAmount === undefined || input.tokenAmount === '') {
+    return { tokenIdentifier: canonical, tokenAmount: expected }
+  }
+  let provided: bigint
+  try {
+    provided = typeof input.tokenAmount === 'bigint' ? input.tokenAmount : BigInt(input.tokenAmount)
+  } catch {
+    throw new Error('Server tokenAmount is not an integer. Refusing to sign.')
+  }
+  if (provided !== expected) {
+    throw new Error(
+      `Server tokenAmount ${provided} does not match amountCents ${input.amountCents} × ${USDB_MICRO_UNITS_PER_CENT}. Refusing to sign.`,
+    )
+  }
+  return { tokenIdentifier: canonical, tokenAmount: expected }
+}
+
 export async function sendUsdbFromPot(input: SendUsdbFromPotInput): Promise<SendUsdbFromPotResult> {
-  const tokenAmount = usdbBaseUnits(input.amountCents)
+  // Validate cents before any wallet is opened so bad input never initializes.
+  const amountBase = usdbBaseUnits(input.amountCents)
   const destination = mainnetDestination(input.destination)
   if (input.network !== 'MAINNET') throw new Error('Network must be MAINNET. Refusing to sign.')
   const accountNumber = input.accountNumber ?? 1
   let transferStarted = false
   try {
     return await withUsdbWallet(input.mnemonic, accountNumber, async (wallet) => {
-      const tokenIdentifier = selectCanonicalUsdbToken(tokenBalancesOf(await wallet.getBalance()), 'MAINNET')
+      // The canonical token is still resolved from the live balance so the
+      // server-named token can be verified, not trusted blindly.
+      const canonical = selectCanonicalUsdbToken(tokenBalancesOf(await wallet.getBalance()), 'MAINNET')
+      const { tokenIdentifier, tokenAmount } = resolveTxParams(input, canonical, amountBase)
       transferStarted = true
       const raw = await wallet.transferTokens({
         tokenIdentifier: tokenIdentifier as Bech32mTokenIdentifier,
@@ -214,6 +267,8 @@ export async function broadcastUsdbFromMnemonic(input: UsdbBroadcastInput): Prom
       amountCents: input.amountCents,
       network: 'MAINNET',
       accountNumber: input.accountIndex,
+      ...(input.tokenIdentifier !== undefined ? { tokenIdentifier: input.tokenIdentifier } : {}),
+      ...(input.tokenAmount !== undefined ? { tokenAmount: input.tokenAmount } : {}),
     })
     return { txid: sent.txid }
   } catch (error) {

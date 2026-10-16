@@ -559,6 +559,33 @@ test('a spark transfer without amount cents refuses before broadcast', async () 
   expect(flow.ledger.rows.has(INTENT_NONCE)).toBe(false)
 })
 
+test('server-created token tx params pass through to the broadcaster', async () => {
+  const flow = setup({
+    intent: signedIntent({
+      kind: 'spark_transfer',
+      payload: {
+        to: DEST,
+        amountSats: 12,
+        maxFeeSats: 0,
+        amountCents: 12,
+        tokenIdentifier: 'btkn1qqqqusdbcanonicaltoken',
+        tokenAmount: 120_000,
+      },
+    }),
+  })
+  const outcome = await flow.sign()
+  expect(outcome.status).toBe('submitted')
+  expect(flow.broadcasts).toHaveLength(1)
+  expect(flow.broadcasts[0]).toMatchObject({
+    destination: DEST,
+    amountCents: 12,
+    network: 'MAINNET',
+    accountNumber: 1,
+    tokenIdentifier: 'btkn1qqqqusdbcanonicaltoken',
+    tokenAmount: 120_000,
+  })
+})
+
 test('non-TTY sign without --yes refuses before any request', async () => {
   const flow = setup()
   let confirmed = false

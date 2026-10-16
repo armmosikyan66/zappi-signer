@@ -175,6 +175,8 @@ export async function signCommand(options: SignCommandOptions): Promise<SignOutc
           amountCents: spend.amountCents,
           network: ctx.network,
           accountNumber: ctx.accountIndex,
+          ...(spend.tokenIdentifier !== undefined ? { tokenIdentifier: spend.tokenIdentifier } : {}),
+          ...(spend.tokenAmount !== undefined ? { tokenAmount: spend.tokenAmount } : {}),
         })
         const txid = canonicalTxid(result.txid)
         journal.put(intentId, txid)
@@ -222,12 +224,22 @@ function enforceIntent(
 }
 
 /** USDB signs only a spark transfer that carries a destination and cents. */
-function sparkSpend(intent: SpendIntent): { destination: string; amountCents: number } {
+function sparkSpend(intent: SpendIntent): {
+  destination: string
+  amountCents: number
+  tokenIdentifier?: string
+  tokenAmount?: number
+} {
   if (intent.kind !== 'spark_transfer') throw new PotError('refused to spend')
   const payload = intent.payload
   if (!isSparkTransferPayload(payload)) throw new PotError('refused to spend')
   if (payload.amountCents === undefined) throw new PotError('amount cents required', 'POLICY_AMOUNT')
-  return { destination: payload.to, amountCents: payload.amountCents }
+  return {
+    destination: payload.to,
+    amountCents: payload.amountCents,
+    ...(payload.tokenIdentifier !== undefined ? { tokenIdentifier: payload.tokenIdentifier } : {}),
+    ...(payload.tokenAmount !== undefined ? { tokenAmount: payload.tokenAmount } : {}),
+  }
 }
 
 function isSparkTransferPayload(payload: IntentPayload): payload is SparkTransferPayload {
