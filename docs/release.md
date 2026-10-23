@@ -1,13 +1,13 @@
 # Release
 
-The signed binary release is what the one-line installer
-(`web/install/signer.sh`, served at `https://zappi.money/signer/install`)
-downloads and verifies. It pins:
+The signed binary release is the GitHub release for a `zappi-signer-v*` tag.
+The public shell installer is gone. This repo does not download one, and
+`scripts/release.mjs` does not write an installer in another repo. A release
+pins:
 
-- `RELEASE_REPO` / `RELEASE_TAG` — the GitHub release to fetch.
-- `MIN_VERSION` — refuses a provenance version below it.
-- `PUBLISHER_PUBKEY_PEM` — the Ed25519 public key, written in the installer
-  itself, never fetched next to the binary.
+- The tag — the GitHub release to fetch.
+- The provenance `version` — refuses a binary whose version does not match the tag.
+- The Ed25519 publisher key — the secret stays in `ZAPPI_SIGNER_RELEASE_KEY`.
 
 ## What a release contains
 
@@ -22,13 +22,12 @@ Per target (`darwin-arm64`, `darwin-x64`, `linux-x64`, `linux-arm64`,
 | `zappi-signer-<target>[.exe].sha256` | Hex digest sidecar |
 
 Darwin targets also carry `macos-keychain` and `macos-keychain.sig`: the
-prebuilt keychain helper that the installer places at
+prebuilt keychain helper published at
 `~/.zappi-signer/macos-keychain`.
 
-The installer verifies the Ed25519 signature with `openssl pkeyutl -verify
--rawin` (or cosign), checks the SHA-256 in the provenance, refuses a version
-below `MIN_VERSION`, and installs mode `0500`. Any failure exits without
-running the file.
+Each artifact is an Ed25519 signature over the binary, a provenance file, and
+a SHA-256 sidecar. `scripts/sign-release.mjs` refuses to emit them without
+the publisher key. A failed sign does not publish the binary.
 
 ## Build and sign locally
 
@@ -61,16 +60,14 @@ produced.
 - `ZAPPI_SIGNER_RELEASE_KEY` is base64 of a 64-byte Ed25519 secret:
   `seed(32) || public-key(32)`. Generate it offline, store it as a GitHub repo
   secret, never commit or log it.
-- Its public half must equal `PUBLISHER_PUBKEY_PEM` in
-  `web/install/signer.sh`. Changing either is a coordinated change: new
-  installer bytes plus a new release, published together.
+- Rotating the key means a new secret and a new signed release. Older
+  binaries fail verification under the new key.
 
 Rotation:
 
 1. Generate a new keypair offline.
-2. Update the repo secret and `PUBLISHER_PUBKEY_PEM` together.
-3. Cut a new installer (the served `web/install/signer.sh` bytes) and a new
-   `zappi-signer-v*` release.
+2. Update the repo secret.
+3. Cut a new `zappi-signer-v*` release.
 
 Old binaries fail verification under the new key — by design. The remote MCP
 (`https://api.zappi.money/mcp`) keeps working; only autonomous free-pot

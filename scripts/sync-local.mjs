@@ -61,8 +61,7 @@ if [ -z "$NODE" ]; then
 fi
 if [ -z "$NODE" ]; then
   echo "zappi-signer: node is required on this machine for the dev wrapper." >&2
-  echo "Either install node, or reinstall the standalone binary:" >&2
-  echo "  curl -fsSL https://zappi.money/signer/install | sh" >&2
+  echo "Install Node, then rerun this wrapper." >&2
   exit 127
 fi
 exec "$NODE" ${bundlePath} "$@"

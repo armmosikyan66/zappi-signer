@@ -6,17 +6,13 @@
  *   npm run release -- minor     # 0.1.3 -> 1.0.0
  *   npm run release -- 0.2.0     # explicit version
  *
- * Spans two git repos:
- *   1. packages/zappi-signer (this repo): bump package.json, commit, tag
- *      zappi-signer-v<version>, push. The tag triggers
- *      .github/workflows/zappi-signer-release.yml, which builds every target,
- *      runs the release smoke test on the real artifacts, signs, and publishes
- *      the GitHub release the installer downloads from.
- *   2. ../web (the web/app repo, staging branch develop): re-pin the one-line
- *      installer (web/install/signer.sh: RELEASE_TAG + FALLBACK_TAG +
- *      MIN_VERSION) so end users without npm/node get the fixed binary,
- *      commit, and push to develop — which is what deploys
- *      dev.zappi.money/signer/install.
+ * This repo only: bump package.json, commit, tag zappi-signer-v<version>,
+ * and push. The tag triggers .github/workflows/zappi-signer-release.yml,
+ * which builds every target, runs the release smoke test on the real
+ * artifacts, signs, and publishes the GitHub release.
+ *
+ * It does not read or write a shell installer in another repo, and it does
+ * not download a public install script.
  */
 import { spawnSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -25,9 +21,6 @@ import { fileURLToPath } from 'node:url'
 
 const pkgRoot = join(dirname(fileURLToPath(import.meta.url)), '..')
 const pkgPath = join(pkgRoot, 'package.json')
-const webRoot = join(pkgRoot, '..', '..', 'web')
-const installerRel = 'install/signer.sh'
-const installerPath = join(webRoot, installerRel)
 const bump = process.argv[2] ?? 'patch'
 
 function git(cwd, args) {
@@ -46,8 +39,6 @@ function die(message) {
 
 const signerStatus = git(pkgRoot, ['status', '--porcelain'])
 if (signerStatus !== '') die(`signer working tree is not clean:\n${signerStatus}\nCommit or stash first — the release commit contains only the version bump.`)
-const webStatus = git(webRoot, ['status', '--porcelain', installerRel])
-if (webStatus !== '') die(`${installerRel} has uncommitted changes in the web repo:\n${webStatus}\nCommit or stash first.`)
 
 const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'))
 const prevVersion = pkg.version
@@ -62,33 +53,7 @@ if (!/^\d+\.\d+\.\d+$/.test(next)) {
 if (next === prevVersion) die(`version is already ${next}`)
 
 const tag = `zappi-signer-v${next}`
-const oldTag = `zappi-signer-v${prevVersion}`
 
-// Re-pin the one-line installer so users WITHOUT npm/node (its only runtime
-// requirements are sh, curl/wget, and openssl) download the new release.
-//   RELEASE_TAG  -> the new tag
-//   FALLBACK_TAG -> the previous release: the new guaranteed-known-good
-//                   version the installer falls back to if the pinned
-//                   release is missing or broken.
-//   MIN_VERSION  -> the fallback version. The fallback IS the floor, so a
-//                   tampered or rolled-back provenance manifest can never
-//                   push a user below the last known-good release.
-// Pins are rewritten line-wise: the previous values differ pin by pin, so
-// exact-match replaceAll cannot express this.
-let installer = readFileSync(installerPath, 'utf8')
-const before = installer
-const rePin = (source, name, value) => {
-  const pattern = new RegExp(`^${name}="[^"\\n]*"$`, 'm')
-  if (!pattern.test(source)) die(`${installerPath} is missing its ${name}="..." pin line`)
-  return source.replace(pattern, `${name}="${value}"`)
-}
-installer = rePin(installer, 'RELEASE_TAG', tag)
-installer = rePin(installer, 'FALLBACK_TAG', oldTag)
-installer = rePin(installer, 'MIN_VERSION', prevVersion)
-if (installer === before) die(`could not re-pin ${installerPath} — no pin line changed`)
-writeFileSync(installerPath, installer)
-
-// 1. Signer repo: version bump commit + tag; the tag starts the release build.
 pkg.version = next
 writeFileSync(pkgPath, `${JSON.stringify(pkg, null, 2)}\n`)
 git(pkgRoot, ['add', 'package.json'])
@@ -97,11 +62,4 @@ git(pkgRoot, ['tag', tag])
 const branch = git(pkgRoot, ['rev-parse', '--abbrev-ref', 'HEAD'])
 git(pkgRoot, ['push', 'origin', `HEAD:${branch}`, tag])
 console.log(`[release] ${tag} pushed to ${branch} — CI builds, smoke-tests, signs, and publishes the release.`)
-
-// 2. Web repo: the re-pinned installer, deployed to dev/staging by a push to develop.
-const webBranch = git(webRoot, ['rev-parse', '--abbrev-ref', 'HEAD'])
-git(webRoot, ['add', installerRel])
-git(webRoot, ['commit', '-m', `release: pin signer installer to ${tag}`])
-git(webRoot, ['push', 'origin', `HEAD:${webBranch}`])
-console.log(`[release] installer re-pinned to ${tag} and pushed to web ${webBranch} — dev.zappi.money/signer/install serves the new version once that deploy lands.`)
 console.log(`[release] watch signer CI: gh run watch $(gh -R armmosikyan66/zappi-signer run list --workflow=zappi-signer-release.yml --limit 1 --json databaseId -q '.[0].databaseId')`)
